@@ -69,7 +69,8 @@ class MultiTaskModel(nn.Module):
         if self.task_routing:
             set_task(self.backbone, 1)
             tokens = self.backbone(images)
-        h, w = images.shape[-2] // 16, images.shape[-1] // 16  # one token per 16 x 16 patch
+        h = images.shape[-2] // self.backbone.patch_size
+        w = images.shape[-1] // self.backbone.patch_size
         features = self.neck(tokens.transpose(1, 2).unflatten(2, (h, w)))  # tokens as a [B, 768, h, w] map
         # Precision rule: the box coder casts anchors to the dtype of the regression output, so in bf16 every
         # coordinate near 512 would snap to a 2 px grid. RPN and RoIHeads therefore run in fp32.

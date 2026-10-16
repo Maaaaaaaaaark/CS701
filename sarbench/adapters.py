@@ -41,13 +41,33 @@ class MoELoRA(nn.Module):
         return self.base(x) + self.scale * self.up(self.down(x) * gates)
 
 
-def add_adapters(backbone, kind):
-    """Freeze the backbone, then wrap attn.qkv and attn.proj of every block (kind: 'lora' or 'moelora')."""
-    adapter = {'lora': LoRA, 'moelora': MoELoRA}[kind]
+def add_adapters(backbone, kind, rank=None, alpha=None, unfreeze_last_blocks=0):
+    """Freeze the backbone, wrap every attention qkv/proj, and optionally unfreeze the last N blocks.
+
+    ``rank`` and ``alpha`` override the adapter defaults. Fully unfreezing the last blocks after wrapping keeps
+    their base weights and adapters trainable, matching the common hybrid PEFT recipe.
+    """
+    if kind == 'lora':
+        rank = 16 if rank is None else rank
+        alpha = 32 if alpha is None else alpha
+        make_adapter = lambda layer: LoRA(layer, rank=rank, alpha=alpha)
+    elif kind == 'moelora':
+        if rank not in (None, 4):
+            raise ValueError('MoE-LoRA rank is per expert and currently fixed at 4')
+        alpha = 8 if alpha is None else alpha
+        make_adapter = lambda layer: MoELoRA(layer, rank=4, alpha=alpha)
+    else:
+        raise ValueError(f'unknown adapter: {kind}')
     backbone.requires_grad_(False)
     for blk in backbone.blocks:
-        blk.attn.qkv = adapter(blk.attn.qkv)
-        blk.attn.proj = adapter(blk.attn.proj)
+        blk.attn.qkv = make_adapter(blk.attn.qkv)
+        blk.attn.proj = make_adapter(blk.attn.proj)
+    if not 0 <= unfreeze_last_blocks <= len(backbone.blocks):
+        raise ValueError(f'unfreeze_last_blocks must be between 0 and {len(backbone.blocks)}')
+    if unfreeze_last_blocks:
+        for blk in backbone.blocks[-unfreeze_last_blocks:]:
+            blk.requires_grad_(True)
+        backbone.final_norm.requires_grad_(True)
 
 
 def set_task(module, task):

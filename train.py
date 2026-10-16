@@ -19,10 +19,14 @@ from sarbench.model import MultiTaskModel
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--data', type=Path, default=Path(__file__).resolve().parents[1] / 'dataset' / 'SARFact-Course-20K')
-    p.add_argument('--backbone', required=True, choices=['vit', 'terramind'])
+    p.add_argument('--data', type=Path, default=Path(__file__).resolve().parent / 'cs701-sar-course-data')
+    p.add_argument('--backbone', required=True, choices=['vit', 'terramind', 'dinov3'])
     p.add_argument('--init', required=True, choices=['pretrained', 'scratch'])
     p.add_argument('--adapt', required=True, choices=['full', 'lora', 'moelora'])
+    p.add_argument('--lora-rank', type=int, help='LoRA rank (default: 16; MoE-LoRA stays at rank 4/expert)')
+    p.add_argument('--lora-alpha', type=float, help='LoRA alpha (default: 2 x rank)')
+    p.add_argument('--unfreeze-last-blocks', type=int, default=0,
+                   help='fully train the last N backbone blocks in addition to adapters')
     p.add_argument('--epochs', type=int, default=24)
     p.add_argument('--batch-size', type=int, default=16)
     p.add_argument('--lr', type=float, default=1e-4)
@@ -32,10 +36,29 @@ def parse_args():
     p.add_argument('--workers', type=int, default=8)
     p.add_argument('--limit', type=int, help='use only the first N images of every split (quick checks)')
     p.add_argument('--seed', type=int, default=0)
+    p.add_argument('--val-fraction', type=float, default=0.1,
+                   help='class-stratified holdout fraction for the released train split')
+    p.add_argument('--split-seed', type=int, default=0, help='seed for the fixed internal train/val split')
+    p.add_argument('--enforce-budget', action='store_true', help='fail if the course parameter limits are exceeded')
     p.add_argument('--out', type=Path, default=Path('runs'))
     args = p.parse_args()
     if args.init == 'scratch' and args.adapt != 'full':
         p.error('--init scratch is only valid with --adapt full')
+    if args.adapt == 'full' and (args.lora_rank is not None or args.lora_alpha is not None or
+                                 args.unfreeze_last_blocks):
+        p.error('LoRA options and --unfreeze-last-blocks require --adapt lora or moelora')
+    if not 0 < args.val_fraction < 1:
+        p.error('--val-fraction must be between 0 and 1')
+    if args.epochs < 1:
+        p.error('--epochs must be at least 1')
+    if args.lora_rank is not None and args.lora_rank < 1:
+        p.error('--lora-rank must be at least 1')
+    if args.lora_alpha is not None and args.lora_alpha <= 0:
+        p.error('--lora-alpha must be positive')
+    if args.unfreeze_last_blocks < 0:
+        p.error('--unfreeze-last-blocks cannot be negative')
+    if args.lora_alpha is None and args.lora_rank is not None:
+        args.lora_alpha = 2 * args.lora_rank
     if args.backbone_lr is None:
         args.backbone_lr = args.lr
     return args
@@ -50,7 +73,8 @@ def log(message, file):
 def make_loader(args, split):
     """Batches of `split`; only the training set is shuffled and augmented."""
     train = split == 'train'
-    dataset = SARMultiTask(args.data, split, train=train, limit=args.limit)
+    dataset = SARMultiTask(args.data, split, train=train, limit=args.limit,
+                           val_fraction=args.val_fraction, split_seed=args.split_seed)
     return DataLoader(dataset, args.batch_size, shuffle=train, num_workers=args.workers, collate_fn=collate,
                       persistent_workers=train and args.workers > 0)  # training workers live across epochs
 
@@ -79,8 +103,9 @@ def train_one_epoch(model, loader, optimizer, schedule, epoch, log_file):
         seen += len(images)
         if step % 50 == 0 or step == len(loader):
             parts = ' '.join(f'{name} {value.item():.3f}' for name, value in losses.items())
+            lrs = '/'.join(f'{group["name"]}:{group["lr"]:.2e}' for group in optimizer.param_groups)
             log(f'epoch {epoch} iter {step}/{len(loader)} loss {loss.item():.3f} ({parts}) '
-                f'lr {optimizer.param_groups[1]["lr"]:.2e} {seen / (time.time() - start):.1f} images/s', log_file)
+                f'lr {lrs} {seen / (time.time() - start):.1f} images/s', log_file)
             start, seen = time.time(), 0
 
 
@@ -110,28 +135,53 @@ def headline(metrics):
 def main():
     args = parse_args()
     torch.manual_seed(args.seed)
-    run_dir = args.out / f'{args.backbone}_{args.init}_{args.adapt}'
+    detail = ''
+    if args.lora_rank is not None:
+        detail = f'_r{args.lora_rank}'
+    if args.unfreeze_last_blocks:
+        detail += f'_u{args.unfreeze_last_blocks}'
+    run_dir = args.out / f'{args.backbone}_{args.init}_{args.adapt}{detail}'
     run_dir.mkdir(parents=True, exist_ok=True)
     log_file = open(run_dir / 'log.txt', 'w')
     log(json.dumps(vars(args), default=str), log_file)
 
     # Data
-    train_loader, val_loader, test_loader = (make_loader(args, split) for split in ('train', 'val', 'test'))
+    train_loader, val_loader = (make_loader(args, split) for split in ('train', 'val'))
+    released_layout = train_loader.dataset.official_layout
+    test_loader = None if released_layout else make_loader(args, 'test')
+    (run_dir / 'split.json').write_text(json.dumps({
+        'split_seed': args.split_seed, 'val_fraction': args.val_fraction,
+        'train_image_ids': train_loader.dataset.image_ids,
+        'val_image_ids': val_loader.dataset.image_ids,
+    }, indent=2))
 
     # Model: adapters are created on the CPU, so they are added before .cuda()
     backbone = build_backbone(args.backbone, pretrained=args.init == 'pretrained')
     if args.adapt != 'full':
-        add_adapters(backbone, args.adapt)  # also freezes the backbone
-    model = MultiTaskModel(backbone, task_routing=args.adapt == 'moelora').cuda()
+        add_adapters(backbone, args.adapt, rank=args.lora_rank, alpha=args.lora_alpha,
+                     unfreeze_last_blocks=args.unfreeze_last_blocks)
+    model = MultiTaskModel(backbone, task_routing=args.adapt == 'moelora')
     parameters = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     log(f'parameters: {parameters:,} total, {trainable:,} trainable', log_file)
+    if args.enforce_budget and (parameters > 130_000_000 or trainable > 40_000_000):
+        raise ValueError(f'course budget exceeded: {parameters:,} total, {trainable:,} trainable')
+    model = model.cuda()
 
     # Optimizer and schedule: trainable backbone parameters at --backbone-lr, all new modules at --lr
-    backbone_params = [p for p in model.backbone.parameters() if p.requires_grad]
+    adapter_parts = ('.down.', '.up.', '.routers.')
+    adapter_params = [p for name, p in model.backbone.named_parameters()
+                      if p.requires_grad and any(part in name for part in adapter_parts)]
+    adapter_ids = {id(p) for p in adapter_params}
+    backbone_params = [p for p in model.backbone.parameters() if p.requires_grad and id(p) not in adapter_ids]
     head_params = [p for name, p in model.named_parameters() if not name.startswith('backbone.')]
-    optimizer = torch.optim.AdamW([{'params': backbone_params, 'lr': args.backbone_lr}, {'params': head_params}],
-                                  lr=args.lr, weight_decay=args.weight_decay)
+    groups = []
+    if backbone_params:
+        groups.append({'params': backbone_params, 'lr': args.backbone_lr, 'name': 'backbone'})
+    if adapter_params:
+        groups.append({'params': adapter_params, 'lr': args.lr, 'name': 'adapters'})
+    groups.append({'params': head_params, 'lr': args.lr, 'name': 'heads'})
+    optimizer = torch.optim.AdamW(groups, lr=args.lr, weight_decay=args.weight_decay)
     warmup, total = len(train_loader), args.epochs * len(train_loader)  # one epoch of warmup
     schedule = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda step: lr_factor(step, warmup, total))
 
@@ -140,15 +190,19 @@ def main():
     for epoch in range(1, args.epochs + 1):
         train_one_epoch(model, train_loader, optimizer, schedule, epoch, log_file)
         if epoch % args.eval_every == 0 or epoch == args.epochs:
-            val, val_detections = evaluate(model, val_loader, args.data / 'detection' / 'instances_val.json')
+            val, val_detections = evaluate(model, val_loader, val_loader.dataset.gt_json)
             history.append({'epoch': epoch, **val})
             log(f'epoch {epoch} val: {headline(val)}', log_file)
     train_hours = (time.time() - start) / 3600
 
-    # Evaluate on test, once
-    test, test_detections = evaluate(model, test_loader, args.data / 'detection' / 'instances_test.json')
+    # The released course val/test sets have no labels. Legacy labelled layouts still get a final test evaluation.
+    test = test_detections = None
+    if test_loader is not None:
+        test, test_detections = evaluate(model, test_loader, test_loader.dataset.gt_json)
     peak_gb = torch.cuda.max_memory_allocated() / 2**30
-    log(f'test: {headline(test)}\ntraining {train_hours:.2f} h, peak GPU memory {peak_gb:.1f} GB', log_file)
+    if test is not None:
+        log(f'test: {headline(test)}', log_file)
+    log(f'training {train_hours:.2f} h, peak GPU memory {peak_gb:.1f} GB', log_file)
 
     # Save
     summary = {'args': vars(args), 'parameters': parameters, 'trainable_parameters': trainable,
@@ -156,7 +210,8 @@ def main():
                'val_history': history, 'val': history[-1], 'test': test}
     (run_dir / 'metrics.json').write_text(json.dumps(summary, indent=2, default=str))
     (run_dir / 'predictions_val.json').write_text(json.dumps(val_detections))
-    (run_dir / 'predictions_test.json').write_text(json.dumps(test_detections))
+    if test_detections is not None:
+        (run_dir / 'predictions_test.json').write_text(json.dumps(test_detections))
     torch.save(model.state_dict(), run_dir / 'model.pt')
 
 

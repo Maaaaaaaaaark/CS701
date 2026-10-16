@@ -15,8 +15,9 @@ image (9 classes) and **detect** its objects.
 2. [Quick Start](#2-quick-start)
    - [2.1 Install](#21-install)
    - [2.2 Train Baseline](#22-train-baseline)
-   - [2.3 Use Course Data](#23-use-course-data)
-   - [2.4 Make Submission](#24-make-submission)
+   - [2.3 Try DINOv3](#23-try-dinov3)
+   - [2.4 Use Course Data](#24-use-course-data)
+   - [2.5 Make Submission](#25-make-submission)
 3. [Baseline Results (for reference)](#3-baseline-results-for-reference)
 4. [Code Structure](#4-code-structure)
 5. [Links](#5-links)
@@ -82,22 +83,42 @@ python train.py --backbone vit --init pretrained --adapt lora   # the Δm refere
 bash run_all.sh                                                  # all eight runs, about 7 h
 ```
 
-- Options: `--backbone vit|terramind`, `--init pretrained|scratch`, `--adapt full|lora|moelora`
+- Options: `--backbone vit|terramind|dinov3`, `--init pretrained|scratch`, `--adapt full|lora|moelora`
   (`python train.py -h`).
 - `--adapt full` and `--init scratch` train 106 M parameters: over the 40 M budget, for reference only.
 - Pretrained weights download from Hugging Face on first use (ViT 0.4 GB, TerraMind 1.5 GB).
 - Times for one RTX PRO 6000 Blackwell GPU. Memory: [docs/DETAILS.md](docs/DETAILS.md#time-and-memory).
 
-### 2.3 Use Course Data
+### 2.3 Try DINOv3
 
-TA Zichen ran this code on fully labelled data in another folder layout. For the
-[course data](https://huggingface.co/datasets/doem1997/cs701-sar-course-data), adapt `sarbench/data.py` and `train.py`:
+The included experiment mirrors the team's DINOv2 recipe as closely as the available information permits:
+DINOv3 ViT-B/16 LVD-1689M, LoRA rank 32 on every attention QKV/projection, plus the final two transformer blocks
+fully trainable. It uses a fixed class-stratified 90/10 split and stays under both course parameter limits:
+107.13 M total and 36.06 M trainable, including both task heads.
 
-- train on `train/labels.csv` + `train/instances.json`
-- hold out part of train for local validation (val and test have no labels)
-- predict on the images in `val/images.json` and `test/images.json`
+```bash
+# The first download may require accepting Meta's DINOv3 terms on Hugging Face, then:
+hf auth login
+bash run_dinov3.sh
+```
 
-### 2.4 Make Submission
+Local validation metrics are printed during training and saved in
+`runs/dinov3_pretrained_lora_r32_u2/metrics.json`. The exact split is saved beside it in `split.json`.
+
+For a self-contained Slurm installation (environment, caches, logs, data and results all below this repository),
+see `cluster/setup_dinov3.sh`, `cluster/submit_dinov3.sh` and the cluster instructions below.
+
+### 2.4 Use Course Data
+
+The code auto-detects the released
+[course data](https://huggingface.co/datasets/doem1997/cs701-sar-course-data) when it is placed at
+`cs701-sar-course-data/`. It reads `train/labels.csv` and `train/instances.json`, then creates the reproducible
+local holdout controlled by `--val-fraction` and `--split-seed`.
+
+The released validation and test labels remain hidden, so local metrics come from the training holdout; official
+validation scores still require a Codabench submission.
+
+### 2.5 Make Submission
 
 `make_submission.py` has `write_submission` (the function in the briefing video): maps your boxes back to
 original image pixels, writes `submission.zip` for Codabench.
@@ -147,7 +168,7 @@ run_all.sh            the eight reference runs (calls train.py)
 make_submission.py    write_submission(): predictions -> submission.zip
 sarbench/             the code behind train.py
 ├── data.py           images + boxes at 512 × 512, flips; boxes back to original pixels
-├── backbones.py      ViT (ImageNet-21k), TerraMind-1.0-base
+├── backbones.py      ViT (ImageNet-21k), TerraMind-1.0-base, DINOv3 ViT-B/16
 ├── adapters.py       LoRA, MoE-LoRA on a frozen backbone
 ├── model.py          backbone + class head + ViTDet feature pyramid + Faster R-CNN
 └── metrics.py        accuracy, macro-F1, COCO box AP
