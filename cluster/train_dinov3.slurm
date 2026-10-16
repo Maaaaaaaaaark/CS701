@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
+#SBATCH --mem=32G
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
@@ -32,8 +32,7 @@ print('gpu:', torch.cuda.get_device_name(0))
 print('torch:', torch.__version__, 'cuda:', torch.version.cuda)
 PY
 
-# Override these at submission time, for example:
-# BATCH_SIZE=8 WORKERS=8 ./cluster/submit_dinov3.sh --partition=gpu
-bash run_dinov3.sh \
+# Override these at submission time. RUN_SCRIPT lets the detail-stem wrapper reuse the same Slurm job.
+bash "${RUN_SCRIPT:-run_dinov3.sh}" \
   --batch-size "${BATCH_SIZE:-8}" \
   --workers "${WORKERS:-8}"

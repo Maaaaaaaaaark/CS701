@@ -15,9 +15,9 @@ from .adapters import set_task
 
 
 class SimpleFeaturePyramid(nn.Module):
-    """ViTDet neck (Li et al., 2022): the single stride-16 ViT map -> 256-channel maps at strides 4, 8, 16, 32, 64."""
+    """ViTDet neck, optionally fusing a true stride-4 image feature for sub-patch object localization."""
 
-    def __init__(self, dim=768, channels=256):
+    def __init__(self, dim=768, channels=256, detail_stem=False):
         super().__init__()
         self.rescale = nn.ModuleList([
             nn.Sequential(nn.ConvTranspose2d(dim, dim // 2, 2, stride=2), nn.GroupNorm(32, dim // 2), nn.GELU(),
@@ -30,9 +30,23 @@ class SimpleFeaturePyramid(nn.Module):
             nn.Sequential(nn.Conv2d(c, channels, 1, bias=False), nn.GroupNorm(32, channels),
                           nn.Conv2d(channels, channels, 3, padding=1, bias=False), nn.GroupNorm(32, channels))
             for c in (dim // 4, dim // 2, dim, dim))
+        # The ViT has one token per 16 x 16 patch. Upsampling those tokens to stride 4 cannot reconstruct where
+        # a 6-15 px object lies inside a patch, so this small CNN preserves spatial detail directly from pixels.
+        self.detail_stem = nn.Sequential(
+            nn.Conv2d(1, 64, 7, stride=2, padding=3, bias=False),
+            nn.GroupNorm(8, 64),
+            nn.GELU(),
+            nn.Conv2d(64, channels, 3, stride=2, padding=1, bias=False),
+            nn.GroupNorm(32, channels),
+            nn.GELU(),
+        ) if detail_stem else None
 
-    def forward(self, x):
+    def forward(self, x, images=None):
         levels = [project(rescale(x)) for rescale, project in zip(self.rescale, self.project)]
+        if self.detail_stem is not None:
+            if images is None:
+                raise ValueError('images are required when the stride-4 detail stem is enabled')
+            levels[0] = levels[0] + self.detail_stem(images)
         levels.append(F.max_pool2d(levels[-1], 1, stride=2))  # stride 64, as torchvision's FPN LastLevelMaxPool
         return OrderedDict(zip(['0', '1', '2', '3', 'pool'], levels))
 
@@ -40,12 +54,12 @@ class SimpleFeaturePyramid(nn.Module):
 class MultiTaskModel(nn.Module):
     """backbone tokens -> classification logits (mean token -> LayerNorm -> Linear) and Faster R-CNN detections."""
 
-    def __init__(self, backbone, task_routing: bool, num_classes=9):
+    def __init__(self, backbone, task_routing: bool, num_classes=9, detail_stem=False):
         super().__init__()
         self.backbone = backbone
         self.task_routing = task_routing  # MoE-LoRA: the backbone runs once per task, with that task's routers
         self.cls_head = nn.Sequential(nn.LayerNorm(backbone.embed_dim), nn.Linear(backbone.embed_dim, num_classes))
-        self.neck = SimpleFeaturePyramid(backbone.embed_dim)
+        self.neck = SimpleFeaturePyramid(backbone.embed_dim, detail_stem=detail_stem)
         # Small objects (median ~16 px at 512 px, 99 % below ~240 px): two anchor scales per octave, from 8 px at
         # stride 4 up to 181 px at stride 64, times 3 aspect ratios = 6 anchors per location.
         anchors = AnchorGenerator(((8, 11), (16, 23), (32, 45), (64, 91), (128, 181)), ((0.5, 1.0, 2.0),) * 5)
@@ -71,7 +85,7 @@ class MultiTaskModel(nn.Module):
             tokens = self.backbone(images)
         h = images.shape[-2] // self.backbone.patch_size
         w = images.shape[-1] // self.backbone.patch_size
-        features = self.neck(tokens.transpose(1, 2).unflatten(2, (h, w)))  # tokens as a [B, 768, h, w] map
+        features = self.neck(tokens.transpose(1, 2).unflatten(2, (h, w)), images)
         # Precision rule: the box coder casts anchors to the dtype of the regression output, so in bf16 every
         # coordinate near 512 would snap to a 2 px grid. RPN and RoIHeads therefore run in fp32.
         with torch.autocast(images.device.type, enabled=False):

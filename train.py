@@ -27,6 +27,8 @@ def parse_args():
     p.add_argument('--lora-alpha', type=float, help='LoRA alpha (default: 2 x rank)')
     p.add_argument('--unfreeze-last-blocks', type=int, default=0,
                    help='fully train the last N backbone blocks in addition to adapters')
+    p.add_argument('--detail-stem', action='store_true',
+                   help='fuse a pixel-level stride-4 CNN feature into the detector pyramid')
     p.add_argument('--epochs', type=int, default=24)
     p.add_argument('--batch-size', type=int, default=16)
     p.add_argument('--lr', type=float, default=1e-4)
@@ -140,6 +142,8 @@ def main():
         detail = f'_r{args.lora_rank}'
     if args.unfreeze_last_blocks:
         detail += f'_u{args.unfreeze_last_blocks}'
+    if args.detail_stem:
+        detail += '_detail'
     run_dir = args.out / f'{args.backbone}_{args.init}_{args.adapt}{detail}'
     run_dir.mkdir(parents=True, exist_ok=True)
     log_file = open(run_dir / 'log.txt', 'w')
@@ -160,7 +164,7 @@ def main():
     if args.adapt != 'full':
         add_adapters(backbone, args.adapt, rank=args.lora_rank, alpha=args.lora_alpha,
                      unfreeze_last_blocks=args.unfreeze_last_blocks)
-    model = MultiTaskModel(backbone, task_routing=args.adapt == 'moelora')
+    model = MultiTaskModel(backbone, task_routing=args.adapt == 'moelora', detail_stem=args.detail_stem)
     parameters = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     log(f'parameters: {parameters:,} total, {trainable:,} trainable', log_file)

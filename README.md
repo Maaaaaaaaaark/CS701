@@ -105,6 +105,9 @@ bash run_dinov3.sh
 Local validation metrics are printed during training and saved in
 `runs/dinov3_pretrained_lora_r32_u2/metrics.json`. The exact split is saved beside it in `split.json`.
 
+For the small-object follow-up, `bash run_dinov3_detail.sh` adds a lightweight CNN path from the original image
+to the stride-4 detector feature. Its separate output is `runs/dinov3_pretrained_lora_r32_u2_detail/`.
+
 For a self-contained Slurm installation (environment, caches, logs, data and results all below this repository),
 see `cluster/setup_dinov3.sh`, `cluster/submit_dinov3.sh` and the cluster instructions below.
 

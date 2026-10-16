@@ -30,3 +30,23 @@ def test_dinov3_hybrid_lora_stays_within_course_budget():
     assert trainable == 36_058_393
     assert total <= 130_000_000
     assert trainable <= 40_000_000
+
+
+def test_dinov3_detail_stem_stays_within_course_budget_and_runs_end_to_end():
+    backbone = build_backbone('dinov3', pretrained=False)
+    add_adapters(backbone, 'lora', rank=32, alpha=64, unfreeze_last_blocks=2)
+    model = MultiTaskModel(backbone, task_routing=False, detail_stem=True).eval()
+
+    total = sum(parameter.numel() for parameter in model.parameters())
+    trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
+    assert total == 107_281_881
+    assert trainable == 36_209_625
+    assert total <= 130_000_000
+    assert trainable <= 40_000_000
+
+    with torch.inference_mode():
+        logits, detections, losses = model(torch.zeros(1, 1, 512, 512))
+    assert logits.shape == (1, 9)
+    assert len(detections) == 1
+    assert set(detections[0]) == {'boxes', 'labels', 'scores'}
+    assert losses == {}
