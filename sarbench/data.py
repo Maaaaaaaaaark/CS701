@@ -18,12 +18,42 @@ from torchvision.transforms import v2
 MEAN, STD = 0.2526, 0.2133
 
 
+def quarter_turn(image, boxes, k):
+    """Rotate an image and its XYXY boxes counter-clockwise by k * 90 degrees."""
+    k = int(k) % 4
+    if k == 0:
+        return image, boxes
+    h, w = boxes.canvas_size
+    rotated_image = tv_tensors.wrap(torch.rot90(image, k, dims=(-2, -1)), like=image)
+    x1, y1, x2, y2 = boxes.as_subclass(torch.Tensor).unbind(dim=-1)
+    if k == 1:
+        coordinates = (y1, w - x2, y2, w - x1)
+        canvas_size = (w, h)
+    elif k == 2:
+        coordinates = (w - x2, h - y2, w - x1, h - y1)
+        canvas_size = (h, w)
+    else:
+        coordinates = (h - y2, x1, h - y1, x2)
+        canvas_size = (w, h)
+    rotated_boxes = tv_tensors.BoundingBoxes(
+        torch.stack(coordinates, dim=-1), format='XYXY', canvas_size=canvas_size)
+    return rotated_image, rotated_boxes
+
+
+class RandomQuarterTurn:
+    """Uniformly choose 0, 90, 180 or 270 degrees; suitable for orientation-free overhead imagery."""
+
+    def __call__(self, image, boxes):
+        return quarter_turn(image, boxes, torch.randint(4, ()).item())
+
+
 class SARMultiTask(Dataset):
     """The images of classification/{split}.csv with their boxes from detection/instances_{split}.json.
     An item is (image [1, size, size], label 0..8, target), target = {'boxes': XYXY on the resized
     image, 'labels': 1..9, 'image_id': COCO id, 'orig_size': (h, w)}."""
 
-    def __init__(self, root, split, train=False, size=512, limit=None, val_fraction=0.1, split_seed=0):
+    def __init__(self, root, split, train=False, size=512, limit=None, val_fraction=0.1, split_seed=0,
+                 rotation90=False):
         self.root = Path(root)
         self.official_layout = (self.root / 'train' / 'labels.csv').exists()
         if self.official_layout:
@@ -59,12 +89,16 @@ class SARMultiTask(Dataset):
         self.annotations = defaultdict(list)  # COCO image id -> its boxes
         for ann in coco['annotations']:
             self.annotations[ann['image_id']].append(ann)
-        flips = [v2.RandomHorizontalFlip(), v2.RandomVerticalFlip()] if train else []
+        geometric = []
+        if train:
+            if rotation90:
+                geometric.append(RandomQuarterTurn())
+            geometric += [v2.RandomHorizontalFlip(), v2.RandomVerticalFlip()]
         self.transform = v2.Compose([
             v2.ToImage(),
             v2.ConvertBoundingBoxFormat('XYXY'),  # COCO [x, y, w, h] -> [x1, y1, x2, y2]
             v2.Resize((size, size)),  # stretches non-square images; boxes are scaled with the pixels
-            *flips,  # overhead imagery has no canonical "up"
+            *geometric,  # overhead imagery has no canonical "up"
             v2.ToDtype(torch.float32, scale=True),
             v2.Normalize([MEAN], [STD]),
         ])

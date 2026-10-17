@@ -29,6 +29,8 @@ def parse_args():
                    help='fully train the last N backbone blocks in addition to adapters')
     p.add_argument('--detail-stem', action='store_true',
                    help='fuse a pixel-level stride-4 CNN feature into the detector pyramid')
+    p.add_argument('--rotation90', action='store_true',
+                   help='randomly rotate training images and boxes by 0/90/180/270 degrees')
     p.add_argument('--epochs', type=int, default=24)
     p.add_argument('--batch-size', type=int, default=16)
     p.add_argument('--lr', type=float, default=1e-4)
@@ -42,6 +44,8 @@ def parse_args():
                    help='class-stratified holdout fraction for the released train split')
     p.add_argument('--split-seed', type=int, default=0, help='seed for the fixed internal train/val split')
     p.add_argument('--enforce-budget', action='store_true', help='fail if the course parameter limits are exceeded')
+    p.add_argument('--keep-last-checkpoints', type=int, default=3,
+                   help='save this many final validation checkpoints in addition to the best-mAP model')
     p.add_argument('--out', type=Path, default=Path('runs'))
     args = p.parse_args()
     if args.init == 'scratch' and args.adapt != 'full':
@@ -59,6 +63,8 @@ def parse_args():
         p.error('--lora-alpha must be positive')
     if args.unfreeze_last_blocks < 0:
         p.error('--unfreeze-last-blocks cannot be negative')
+    if args.keep_last_checkpoints < 0:
+        p.error('--keep-last-checkpoints cannot be negative')
     if args.lora_alpha is None and args.lora_rank is not None:
         args.lora_alpha = 2 * args.lora_rank
     if args.backbone_lr is None:
@@ -76,7 +82,8 @@ def make_loader(args, split):
     """Batches of `split`; only the training set is shuffled and augmented."""
     train = split == 'train'
     dataset = SARMultiTask(args.data, split, train=train, limit=args.limit,
-                           val_fraction=args.val_fraction, split_seed=args.split_seed)
+                           val_fraction=args.val_fraction, split_seed=args.split_seed,
+                           rotation90=args.rotation90)
     return DataLoader(dataset, args.batch_size, shuffle=train, num_workers=args.workers, collate_fn=collate,
                       persistent_workers=train and args.workers > 0)  # training workers live across epochs
 
@@ -144,6 +151,10 @@ def main():
         detail += f'_u{args.unfreeze_last_blocks}'
     if args.detail_stem:
         detail += '_detail'
+    if args.rotation90:
+        detail += '_rot90'
+    if args.epochs != 24:
+        detail += f'_e{args.epochs}'
     run_dir = args.out / f'{args.backbone}_{args.init}_{args.adapt}{detail}'
     run_dir.mkdir(parents=True, exist_ok=True)
     log_file = open(run_dir / 'log.txt', 'w')
@@ -189,14 +200,25 @@ def main():
     warmup, total = len(train_loader), args.epochs * len(train_loader)  # one epoch of warmup
     schedule = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda step: lr_factor(step, warmup, total))
 
-    # Train, validating every --eval-every epochs; the reported model is the last-epoch model
+    # Train and validate periodically. Keep the best-mAP weights and the final few validation checkpoints.
     history, start = [], time.time()
+    evaluation_epochs = [epoch for epoch in range(1, args.epochs + 1)
+                         if epoch % args.eval_every == 0 or epoch == args.epochs]
+    retained_epochs = set(evaluation_epochs[-args.keep_last_checkpoints:]) if args.keep_last_checkpoints else set()
+    best_map, best_map_epoch, best_val = float('-inf'), None, None
     for epoch in range(1, args.epochs + 1):
         train_one_epoch(model, train_loader, optimizer, schedule, epoch, log_file)
         if epoch % args.eval_every == 0 or epoch == args.epochs:
             val, val_detections = evaluate(model, val_loader, val_loader.dataset.gt_json)
             history.append({'epoch': epoch, **val})
             log(f'epoch {epoch} val: {headline(val)}', log_file)
+            if val['mAP'] > best_map:
+                best_map, best_map_epoch, best_val = val['mAP'], epoch, {'epoch': epoch, **val}
+                torch.save(model.state_dict(), run_dir / 'model_best_map.pt')
+                log(f'epoch {epoch}: saved model_best_map.pt', log_file)
+            if epoch in retained_epochs:
+                torch.save(model.state_dict(), run_dir / f'model_epoch_{epoch:03d}.pt')
+                log(f'epoch {epoch}: saved retained checkpoint', log_file)
     train_hours = (time.time() - start) / 3600
 
     # The released course val/test sets have no labels. Legacy labelled layouts still get a final test evaluation.
@@ -211,6 +233,7 @@ def main():
     # Save
     summary = {'args': vars(args), 'parameters': parameters, 'trainable_parameters': trainable,
                'train_hours': train_hours, 'peak_gpu_memory_gb': peak_gb,
+               'best_mAP': best_map, 'best_mAP_epoch': best_map_epoch, 'best_val': best_val,
                'val_history': history, 'val': history[-1], 'test': test}
     (run_dir / 'metrics.json').write_text(json.dumps(summary, indent=2, default=str))
     (run_dir / 'predictions_val.json').write_text(json.dumps(val_detections))

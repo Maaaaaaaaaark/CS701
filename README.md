@@ -108,6 +108,10 @@ Local validation metrics are printed during training and saved in
 For the small-object follow-up, `bash run_dinov3_detail.sh` adds a lightweight CNN path from the original image
 to the stride-4 detector feature. Its separate output is `runs/dinov3_pretrained_lora_r32_u2_detail/`.
 
+Experiment A runs that model for 36 epochs with random right-angle rotations and keeps the best-mAP model plus
+the final three validation checkpoints: `bash run_dinov3_experiment_a.sh`. Its output is
+`runs/dinov3_pretrained_lora_r32_u2_detail_rot90_e36/`.
+
 For a self-contained Slurm installation (environment, caches, logs, data and results all below this repository),
 see `cluster/setup_dinov3.sh`, `cluster/submit_dinov3.sh` and the cluster instructions below.
 

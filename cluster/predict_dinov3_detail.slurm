@@ -19,7 +19,7 @@ source .venv/bin/activate
 
 python make_submission.py \
   --data cs701-sar-course-data/val \
-  --checkpoint runs/dinov3_pretrained_lora_r32_u2_detail/model.pt \
-  --output submissions/dinov3_detail_val.zip \
+  --checkpoint "${CHECKPOINT:-runs/dinov3_pretrained_lora_r32_u2_detail/model.pt}" \
+  --output "${OUTPUT:-submissions/dinov3_detail_val.zip}" \
   --batch-size "${BATCH_SIZE:-8}" \
   --workers "${WORKERS:-8}"
