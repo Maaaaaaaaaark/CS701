@@ -123,8 +123,10 @@ validation scores still require a Codabench submission.
 
 ### 2.5 Make Submission
 
-`make_submission.py` has `write_submission` (the function in the briefing video): maps your boxes back to
-original image pixels, writes `submission.zip` for Codabench.
+Extract `val.tar.gz`, then run `make_submission.py` with the trained checkpoint. It normalizes the validation
+images exactly as in training, maps predicted boxes back to original pixels, writes the two required files into a
+ZIP, and validates the archive. On Slurm, submit `cluster/submit_prediction.sh`; the default output is
+`submissions/dinov3_detail_val.zip`.
 
 ## 3. Baseline Results (for reference)
 
