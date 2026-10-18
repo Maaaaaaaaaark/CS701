@@ -17,9 +17,15 @@ cd "$PROJECT_ROOT"
 source cluster/project_env.sh
 source .venv/bin/activate
 
+EXTRA_ARGS=()
+if [[ "${CASCADE:-0}" == "1" ]]; then
+  EXTRA_ARGS+=(--cascade)
+fi
+
 python make_submission.py \
   --data cs701-sar-course-data/val \
   --checkpoint "${CHECKPOINT:-runs/dinov3_pretrained_lora_r32_u2_detail/model.pt}" \
   --output "${OUTPUT:-submissions/dinov3_detail_val.zip}" \
   --batch-size "${BATCH_SIZE:-8}" \
-  --workers "${WORKERS:-8}"
+  --workers "${WORKERS:-8}" \
+  "${EXTRA_ARGS[@]}"

@@ -29,6 +29,8 @@ def parse_args():
                    help='fully train the last N backbone blocks in addition to adapters')
     p.add_argument('--detail-stem', action='store_true',
                    help='fuse a pixel-level stride-4 CNN feature into the detector pyramid')
+    p.add_argument('--cascade', action='store_true',
+                   help='use the budget-aware three-stage Cascade R-CNN RoI head')
     p.add_argument('--rotation90', action='store_true',
                    help='randomly rotate training images and boxes by 0/90/180/270 degrees')
     p.add_argument('--epochs', type=int, default=24)
@@ -151,6 +153,8 @@ def main():
         detail += f'_u{args.unfreeze_last_blocks}'
     if args.detail_stem:
         detail += '_detail'
+    if args.cascade:
+        detail += '_cascade'
     if args.rotation90:
         detail += '_rot90'
     if args.epochs != 24:
@@ -175,7 +179,8 @@ def main():
     if args.adapt != 'full':
         add_adapters(backbone, args.adapt, rank=args.lora_rank, alpha=args.lora_alpha,
                      unfreeze_last_blocks=args.unfreeze_last_blocks)
-    model = MultiTaskModel(backbone, task_routing=args.adapt == 'moelora', detail_stem=args.detail_stem)
+    model = MultiTaskModel(backbone, task_routing=args.adapt == 'moelora', detail_stem=args.detail_stem,
+                           cascade=args.cascade)
     parameters = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     log(f'parameters: {parameters:,} total, {trainable:,} trainable', log_file)

@@ -87,6 +87,8 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--cascade", action="store_true",
+                        help="load the compact Cascade R-CNN detection head")
     return parser.parse_args()
 
 
@@ -108,7 +110,7 @@ def main():
 
     backbone = build_backbone("dinov3", pretrained=False)
     add_adapters(backbone, "lora", rank=32, alpha=64, unfreeze_last_blocks=2)
-    model = MultiTaskModel(backbone, task_routing=False, detail_stem=True)
+    model = MultiTaskModel(backbone, task_routing=False, detail_stem=True, cascade=args.cascade)
     state = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
     model.load_state_dict(state)
     model.to(device).eval()
