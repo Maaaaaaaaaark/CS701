@@ -116,6 +116,10 @@ Experiment B isolates a compact three-stage Cascade R-CNN head at the original 2
 rotation augmentation: `bash run_dinov3_experiment_b.sh`. Its output is
 `runs/dinov3_pretrained_lora_r32_u2_detail_cascade/`.
 
+Experiment C keeps Experiment B unchanged except for extending the schedule to 36 epochs. It still does not use
+rotation augmentation: `bash run_dinov3_experiment_c.sh`. Its separate output is
+`runs/dinov3_pretrained_lora_r32_u2_detail_cascade_e36/`.
+
 For a self-contained Slurm installation (environment, caches, logs, data and results all below this repository),
 see `cluster/setup_dinov3.sh`, `cluster/submit_dinov3.sh` and the cluster instructions below.
 
