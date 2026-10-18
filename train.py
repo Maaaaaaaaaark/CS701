@@ -31,6 +31,8 @@ def parse_args():
                    help='fuse a pixel-level stride-4 CNN feature into the detector pyramid')
     p.add_argument('--cascade', action='store_true',
                    help='use the budget-aware three-stage Cascade R-CNN RoI head')
+    p.add_argument('--cascade-hidden-dim', type=int, default=384,
+                   help='hidden width of each compact Cascade box head (default: 384)')
     p.add_argument('--rotation90', action='store_true',
                    help='randomly rotate training images and boxes by 0/90/180/270 degrees')
     p.add_argument('--epochs', type=int, default=24)
@@ -67,6 +69,10 @@ def parse_args():
         p.error('--unfreeze-last-blocks cannot be negative')
     if args.keep_last_checkpoints < 0:
         p.error('--keep-last-checkpoints cannot be negative')
+    if args.cascade_hidden_dim < 1:
+        p.error('--cascade-hidden-dim must be at least 1')
+    if not args.cascade and args.cascade_hidden_dim != 384:
+        p.error('--cascade-hidden-dim requires --cascade')
     if args.lora_alpha is None and args.lora_rank is not None:
         args.lora_alpha = 2 * args.lora_rank
     if args.backbone_lr is None:
@@ -155,6 +161,8 @@ def main():
         detail += '_detail'
     if args.cascade:
         detail += '_cascade'
+        if args.cascade_hidden_dim != 384:
+            detail += f'_h{args.cascade_hidden_dim}'
     if args.rotation90:
         detail += '_rot90'
     if args.epochs != 24:
@@ -180,7 +188,7 @@ def main():
         add_adapters(backbone, args.adapt, rank=args.lora_rank, alpha=args.lora_alpha,
                      unfreeze_last_blocks=args.unfreeze_last_blocks)
     model = MultiTaskModel(backbone, task_routing=args.adapt == 'moelora', detail_stem=args.detail_stem,
-                           cascade=args.cascade)
+                           cascade=args.cascade, cascade_hidden_dim=args.cascade_hidden_dim)
     parameters = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     log(f'parameters: {parameters:,} total, {trainable:,} trainable', log_file)

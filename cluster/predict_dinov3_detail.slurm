@@ -21,6 +21,9 @@ EXTRA_ARGS=()
 if [[ "${CASCADE:-0}" == "1" ]]; then
   EXTRA_ARGS+=(--cascade)
 fi
+if [[ -n "${CASCADE_HIDDEN_DIM:-}" ]]; then
+  EXTRA_ARGS+=(--cascade-hidden-dim "$CASCADE_HIDDEN_DIM")
+fi
 
 python make_submission.py \
   --data cs701-sar-course-data/val \

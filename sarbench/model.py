@@ -156,7 +156,8 @@ class CompactCascadeRoIHeads(nn.Module):
 class MultiTaskModel(nn.Module):
     """backbone tokens -> classification logits (mean token -> LayerNorm -> Linear) and Faster R-CNN detections."""
 
-    def __init__(self, backbone, task_routing: bool, num_classes=9, detail_stem=False, cascade=False):
+    def __init__(self, backbone, task_routing: bool, num_classes=9, detail_stem=False, cascade=False,
+                 cascade_hidden_dim=384):
         super().__init__()
         self.backbone = backbone
         self.task_routing = task_routing  # MoE-LoRA: the backbone runs once per task, with that task's routers
@@ -171,7 +172,7 @@ class MultiTaskModel(nn.Module):
             positive_fraction=0.5, pre_nms_top_n=dict(training=2000, testing=1000),
             post_nms_top_n=dict(training=2000, testing=1000), nms_thresh=0.7)
         if cascade:
-            self.roi_heads = CompactCascadeRoIHeads(num_classes)
+            self.roi_heads = CompactCascadeRoIHeads(num_classes, hidden=cascade_hidden_dim)
         else:
             self.roi_heads = RoIHeads(
                 MultiScaleRoIAlign(['0', '1', '2', '3'], output_size=7, sampling_ratio=2),

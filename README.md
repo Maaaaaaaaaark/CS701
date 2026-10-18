@@ -124,6 +124,10 @@ Experiment D adds random right-angle rotation augmentation to Experiment C while
 configuration unchanged: `bash run_dinov3_experiment_d.sh`. Its separate output is
 `runs/dinov3_pretrained_lora_r32_u2_detail_cascade_rot90_e36/`.
 
+Experiment E returns to the unrotated Experiment C recipe and widens each Cascade box head from 384 to 448. It
+uses 110.82 M total and 39.75 M trainable parameters: `bash run_dinov3_experiment_e.sh`. Its output is
+`runs/dinov3_pretrained_lora_r32_u2_detail_cascade_h448_e36/`.
+
 For a self-contained Slurm installation (environment, caches, logs, data and results all below this repository),
 see `cluster/setup_dinov3.sh`, `cluster/submit_dinov3.sh` and the cluster instructions below.
 

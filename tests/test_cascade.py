@@ -24,6 +24,20 @@ def test_compact_cascade_stays_within_course_budget():
     assert trainable <= 40_000_000
 
 
+def test_wide_compact_cascade_uses_remaining_trainable_budget():
+    backbone = build_backbone('dinov3', pretrained=False)
+    add_adapters(backbone, 'lora', rank=32, alpha=64, unfreeze_last_blocks=2)
+    model = MultiTaskModel(
+        backbone, task_routing=False, detail_stem=True, cascade=True, cascade_hidden_dim=448)
+
+    total = sum(parameter.numel() for parameter in model.parameters())
+    trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
+    assert total == 110_817_745
+    assert trainable == 39_745_489
+    assert total <= 130_000_000
+    assert trainable <= 40_000_000
+
+
 def test_compact_cascade_eval_forward():
     model = build_cascade_model().eval()
     with torch.inference_mode():
