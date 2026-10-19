@@ -131,7 +131,21 @@ uses 110.82 M total and 39.75 M trainable parameters: `bash run_dinov3_experimen
 For a self-contained Slurm installation (environment, caches, logs, data and results all below this repository),
 see `cluster/setup_dinov3.sh`, `cluster/submit_dinov3.sh` and the cluster instructions below.
 
-### 2.4 Use Course Data
+### 2.4 Full-finetune RTMDet-m
+
+`bash run_rtmdet_m.sh` trains one shared ImageNet-pretrained CSPNeXt-m backbone end-to-end with a global image
+classification branch and an RTMDet-style CSPNeXt PAFPN/SepBN detection branch. It uses Dynamic Soft Label
+assignment, Quality Focal Loss and GIoU box loss. The implementation depends only on the existing PyTorch,
+Torchvision and timm environment; it does not require MMCV. It enforces the 130 M total / 40 M trainable course
+limits and writes to `runs/rtmdet_m_imagenet_full_e48/`.
+
+On Slurm, use `cluster/submit_rtmdet_m.sh`. Every validation checkpoint also updates
+`training_state_latest.pt`, which includes model, optimizer and scheduler state for recovery after preemption.
+Set the `RESUME` environment variable to that path when resubmitting. Only ImageNet backbone weights are loaded;
+the PAFPN, detector and image classifier are trained from scratch on the course data.
+Run `cluster/submit_rtmdet_m_smoke.sh` first for a 32-image, one-epoch end-to-end check.
+
+### 2.5 Use Course Data
 
 The code auto-detects the released
 [course data](https://huggingface.co/datasets/doem1997/cs701-sar-course-data) when it is placed at
@@ -141,12 +155,15 @@ local holdout controlled by `--val-fraction` and `--split-seed`.
 The released validation and test labels remain hidden, so local metrics come from the training holdout; official
 validation scores still require a Codabench submission.
 
-### 2.5 Make Submission
+### 2.6 Make Submission
 
 Extract `val.tar.gz`, then run `make_submission.py` with the trained checkpoint. It normalizes the validation
 images exactly as in training, maps predicted boxes back to original pixels, writes the two required files into a
 ZIP, and validates the archive. On Slurm, submit `cluster/submit_prediction.sh`; the default output is
 `submissions/dinov3_detail_val.zip`.
+
+For RTMDet-m, use `make_submission_rtmdet.py` or `cluster/submit_prediction_rtmdet_m.sh` with `CHECKPOINT` set
+to its `model_best_map.pt`.
 
 ## 3. Baseline Results (for reference)
 
@@ -189,13 +206,16 @@ Accuracy and AP50: [docs/DETAILS.md](docs/DETAILS.md#results-in-full).
 
 ```
 train.py              entry: train + evaluate one configuration
+train_rtmdet.py       full-finetune CSPNeXt-m/RTMDet + evaluate + resumable checkpoints
 run_all.sh            the eight reference runs (calls train.py)
 make_submission.py    write_submission(): predictions -> submission.zip
+make_submission_rtmdet.py  RTMDet checkpoint -> submission.zip
 sarbench/             the code behind train.py
 ├── data.py           images + boxes at 512 × 512, flips; boxes back to original pixels
 ├── backbones.py      ViT (ImageNet-21k), TerraMind-1.0-base, DINOv3 ViT-B/16
 ├── adapters.py       LoRA, MoE-LoRA on a frozen backbone
 ├── model.py          backbone + class head + ViTDet feature pyramid + Faster R-CNN
+├── rtmdet.py         CSPNeXt-m + PAFPN + shared SepBN RTMDet head + image classifier
 └── metrics.py        accuracy, macro-F1, COCO box AP
 tests/                checks of sarbench/ (python -m pytest tests)
 docs/DETAILS.md       model, training protocol, design notes, time and memory
