@@ -1,12 +1,12 @@
 """A dependency-light RTMDet-m multi-task model for the CS701 SAR benchmark.
 
-The model uses timm's ImageNet-pretrained CSPNeXt-m backbone, an RTMDet-style
-CSPNeXt PAFPN and shared-convolution SepBN dense head.  A global classification
-head and the detector consume the same backbone features from one image pass.
+The model uses OpenMMLab's ImageNet-pretrained CSPNeXt-m backbone, an
+RTMDet-style CSPNeXt PAFPN and shared-convolution SepBN dense head. A global
+classification head and the detector consume the same backbone features from
+one image pass. The backbone is implemented locally to avoid an MMCV dependency.
 """
 import math
 
-import timm
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -22,6 +22,150 @@ class ConvBNAct(nn.Sequential):
             nn.BatchNorm2d(out_channels, eps=1e-3, momentum=0.03),
             nn.SiLU(inplace=True),
         )
+
+
+class MMConv(nn.Module):
+    """Conv-BN-SiLU with OpenMMLab-compatible parameter names."""
+
+    def __init__(self, in_channels, out_channels, kernel_size=1, stride=1, groups=1):
+        super().__init__()
+        self.conv = nn.Conv2d(
+            in_channels, out_channels, kernel_size, stride, kernel_size // 2,
+            groups=groups, bias=False)
+        self.bn = nn.BatchNorm2d(out_channels, eps=1e-3, momentum=0.03)
+        self.activate = nn.SiLU(inplace=True)
+
+    def forward(self, x):
+        return self.activate(self.bn(self.conv(x)))
+
+
+class MMDepthwiseSeparableConv(nn.Module):
+    """OpenMMLab-compatible depthwise/pointwise convolution module."""
+
+    def __init__(self, in_channels, out_channels, kernel_size=5):
+        super().__init__()
+        self.depthwise_conv = MMConv(
+            in_channels, in_channels, kernel_size, groups=in_channels)
+        self.pointwise_conv = MMConv(in_channels, out_channels, 1)
+
+    def forward(self, x):
+        return self.pointwise_conv(self.depthwise_conv(x))
+
+
+class BackboneCSPNeXtBlock(nn.Module):
+    def __init__(self, channels, add_identity=True):
+        super().__init__()
+        self.conv1 = MMConv(channels, channels, 3)
+        self.conv2 = MMDepthwiseSeparableConv(channels, channels, 5)
+        self.add_identity = add_identity
+
+    def forward(self, x):
+        output = self.conv2(self.conv1(x))
+        return output + x if self.add_identity else output
+
+
+class ChannelAttention(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.global_avgpool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Conv2d(channels, channels, 1, bias=True)
+        self.act = nn.Hardsigmoid(inplace=True)
+
+    def forward(self, x):
+        return x * self.act(self.fc(self.global_avgpool(x.float()))).to(x.dtype)
+
+
+class BackboneCSPLayer(nn.Module):
+    """The exact CSP layer layout used by the official CSPNeXt backbone."""
+
+    def __init__(self, channels, blocks, add_identity):
+        super().__init__()
+        hidden = channels // 2
+        self.main_conv = MMConv(channels, hidden, 1)
+        self.short_conv = MMConv(channels, hidden, 1)
+        self.final_conv = MMConv(2 * hidden, channels, 1)
+        self.blocks = nn.Sequential(*(
+            BackboneCSPNeXtBlock(hidden, add_identity) for _ in range(blocks)))
+        self.attention = ChannelAttention(2 * hidden)
+
+    def forward(self, x):
+        main = self.blocks(self.main_conv(x))
+        shortcut = self.short_conv(x)
+        return self.final_conv(self.attention(torch.cat((main, shortcut), dim=1)))
+
+
+class SPPBottleneck(nn.Module):
+    def __init__(self, channels, kernel_sizes=(5, 9, 13)):
+        super().__init__()
+        hidden = channels // 2
+        self.conv1 = MMConv(channels, hidden, 1)
+        self.poolings = nn.ModuleList(
+            nn.MaxPool2d(kernel, stride=1, padding=kernel // 2) for kernel in kernel_sizes)
+        self.conv2 = MMConv(hidden * (len(kernel_sizes) + 1), channels, 1)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        return self.conv2(torch.cat([x] + [pool(x) for pool in self.poolings], dim=1))
+
+
+class CSPNeXtMBackbone(nn.Module):
+    """Native CSPNeXt-m (P5, depth .67, width .75), returning strides 8/16/32."""
+
+    checkpoint_url = (
+        'https://download.openmmlab.com/mmdetection/v3.0/rtmdet/'
+        'cspnext_rsb_pretrain/cspnext-m_8xb256-rsb-a1-600e_in1k-ecb3bbd9.pth')
+    channels = (192, 384, 768)
+
+    def __init__(self, pretrained=True):
+        super().__init__()
+        self.stem = nn.Sequential(
+            MMConv(1, 24, 3, stride=2),
+            MMConv(24, 24, 3),
+            MMConv(24, 48, 3),
+        )
+        self.stage1 = self._stage(48, 96, blocks=2, add_identity=True)
+        self.stage2 = self._stage(96, 192, blocks=4, add_identity=True)
+        self.stage3 = self._stage(192, 384, blocks=4, add_identity=True)
+        self.stage4 = self._stage(384, 768, blocks=2, add_identity=False, spp=True)
+        if pretrained:
+            self.load_imagenet_weights()
+
+    @staticmethod
+    def _stage(in_channels, out_channels, blocks, add_identity, spp=False):
+        layers = [MMConv(in_channels, out_channels, 3, stride=2)]
+        if spp:
+            layers.append(SPPBottleneck(out_channels))
+        layers.append(BackboneCSPLayer(out_channels, blocks, add_identity))
+        return nn.Sequential(*layers)
+
+    def load_imagenet_weights(self):
+        checkpoint = torch.hub.load_state_dict_from_url(
+            self.checkpoint_url, map_location='cpu', check_hash=True, progress=True)
+        state = checkpoint.get('state_dict', checkpoint)
+        state = {
+            key.removeprefix('backbone.'): value
+            for key, value in state.items()
+            if key.startswith('backbone.')
+        }
+        first_conv = 'stem.0.conv.weight'
+        if first_conv not in state:
+            raise RuntimeError('official CSPNeXt checkpoint has no backbone stem weight')
+        # Summing RGB channels preserves the response that a repeated grayscale
+        # input would have produced with the original three-channel convolution.
+        state[first_conv] = state[first_conv].sum(dim=1, keepdim=True)
+        incompatible = self.load_state_dict(state, strict=False)
+        if incompatible.missing_keys or incompatible.unexpected_keys:
+            raise RuntimeError(
+                'CSPNeXt ImageNet checkpoint is incompatible: '
+                f'missing={incompatible.missing_keys}, unexpected={incompatible.unexpected_keys}')
+
+    def forward(self, x):
+        x = self.stem(x)
+        x = self.stage1(x)
+        c3 = self.stage2(x)
+        c4 = self.stage3(c3)
+        c5 = self.stage4(c4)
+        return c3, c4, c5
 
 
 class CSPNeXtBlock(nn.Module):
@@ -201,14 +345,8 @@ class RTMDetMultiTask(nn.Module):
 
     def __init__(self, num_classes=9, pretrained=True, score_threshold=0.001, detections_per_image=100):
         super().__init__()
-        # timm adapts the ImageNet RGB stem weights to one input channel.
-        self.backbone = timm.create_model(
-            'cspnext_m.rsb_a1_in1k', pretrained=pretrained, features_only=True,
-            in_chans=1, out_indices=(2, 3, 4))
-        channels = self.backbone.feature_info.channels()
-        reductions = tuple(self.backbone.feature_info.reduction())
-        if reductions != self.strides:
-            raise ValueError(f'expected CSPNeXt reductions {self.strides}, got {reductions}')
+        self.backbone = CSPNeXtMBackbone(pretrained=pretrained)
+        channels = self.backbone.channels
         self.classifier = nn.Linear(channels[-1], num_classes)
         self.neck = CSPNeXtPAFPN(channels, out_channels=192, blocks=2)
         self.detector = RTMDetHead(num_classes, channels=192)

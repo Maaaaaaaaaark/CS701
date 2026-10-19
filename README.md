@@ -133,10 +133,10 @@ see `cluster/setup_dinov3.sh`, `cluster/submit_dinov3.sh` and the cluster instru
 
 ### 2.4 Full-finetune RTMDet-m
 
-`bash run_rtmdet_m.sh` trains one shared ImageNet-pretrained CSPNeXt-m backbone end-to-end with a global image
+`bash run_rtmdet_m.sh` trains one shared OpenMMLab ImageNet-pretrained CSPNeXt-m backbone end-to-end with a global image
 classification branch and an RTMDet-style CSPNeXt PAFPN/SepBN detection branch. It uses Dynamic Soft Label
-assignment, Quality Focal Loss and GIoU box loss. The implementation depends only on the existing PyTorch,
-Torchvision and timm environment; it does not require MMCV. It enforces the 130 M total / 40 M trainable course
+assignment, Quality Focal Loss and GIoU box loss. CSPNeXt-m is implemented locally and loads the official
+OpenMMLab ImageNet-1k checkpoint, so it does not require MMCV. It enforces the 130 M total / 40 M trainable course
 limits and writes to `runs/rtmdet_m_imagenet_full_e48/`.
 
 On Slurm, use `cluster/submit_rtmdet_m.sh`. Every validation checkpoint also updates
