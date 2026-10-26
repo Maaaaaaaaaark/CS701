@@ -1,4 +1,4 @@
-"""RF-DETR Small with a shared image-classification branch.
+"""RF-DETR with a shared image-classification branch.
 
 The classifier consumes the P4 feature produced by RF-DETR's single backbone
 forward.  A hook is used instead of re-running the DINOv2 encoder, preserving
@@ -6,7 +6,7 @@ the course requirement that each image enters the model only once.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 import torch
 from torch import nn
@@ -15,6 +15,7 @@ from torchvision.ops import box_convert
 
 RFDETR_IMAGE_MEAN = (0.485, 0.456, 0.406)
 RFDETR_IMAGE_STD = (0.229, 0.224, 0.225)
+RFDETRVariant = Literal["small", "medium"]
 
 
 def _install_exact_size_assignment_workaround() -> None:
@@ -64,13 +65,70 @@ def prepare_detection_targets(targets: list[dict[str, Any]], size: int = 512) ->
     return converted
 
 
-class RFDETRMultiTask(nn.Module):
-    """One fully trainable RF-DETR Small model for image classification and detection."""
+def apply_detection_policy(
+    detection: dict[str, torch.Tensor],
+    image_class_probs: torch.Tensor,
+    *,
+    class_fusion_alpha: float = 0.0,
+    class_gate: bool = False,
+    topk: int | None = None,
+) -> dict[str, torch.Tensor]:
+    """Apply an image-class prior and optional top-k pruning to one image's detections.
 
-    def __init__(self, num_classes: int = 9, pretrained: bool = True, resolution: int = 512):
+    The course guarantees that every object in an image has the image class. Score
+    fusion softly down-weights detector classes that disagree with the shared
+    classifier, while ``class_gate`` is the deliberately stronger diagnostic that
+    keeps only the classifier's top class. Degenerate boxes are removed so the
+    result is directly valid for the submission scorer.
+    """
+    if class_fusion_alpha < 0:
+        raise ValueError("class_fusion_alpha must be non-negative")
+    if topk is not None and topk < 1:
+        raise ValueError("topk must be positive when provided")
+    if image_class_probs.ndim != 1:
+        raise ValueError("image_class_probs must be a one-dimensional tensor")
+
+    boxes = detection["boxes"]
+    labels = detection["labels"].long()
+    scores = detection["scores"].float()
+    if labels.numel() and (labels.min() < 0 or labels.max() >= image_class_probs.numel()):
+        raise ValueError("detection label is outside image_class_probs")
+
+    finite = torch.isfinite(boxes).all(dim=1) & torch.isfinite(scores)
+    positive_area = (boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1])
+    keep = finite & positive_area
+    if class_gate:
+        keep &= labels == image_class_probs.argmax()
+    indices = torch.where(keep)[0]
+
+    adjusted_scores = scores[indices]
+    if class_fusion_alpha:
+        priors = image_class_probs.to(scores.device)[labels[indices]].clamp_min(1e-8)
+        adjusted_scores = adjusted_scores * priors.pow(class_fusion_alpha)
+    order = torch.argsort(adjusted_scores, descending=True, stable=True)
+    if topk is not None:
+        order = order[:topk]
+    indices = indices[order]
+    return {
+        "boxes": boxes[indices],
+        "labels": labels[indices],
+        "scores": adjusted_scores[order],
+    }
+
+
+class RFDETRMultiTask(nn.Module):
+    """One fully trainable RF-DETR model for image classification and detection."""
+
+    def __init__(
+        self,
+        num_classes: int = 9,
+        pretrained: bool = True,
+        resolution: int = 512,
+        variant: RFDETRVariant = "small",
+    ):
         super().__init__()
         try:
-            from rfdetr import RFDETRSmall
+            from rfdetr import RFDETRMedium, RFDETRSmall
             from rfdetr.config import TrainConfig
             from rfdetr.models import build_criterion_from_config
         except ImportError as exc:  # pragma: no cover - exercised by the cluster setup path
@@ -79,6 +137,9 @@ class RFDETRMultiTask(nn.Module):
             ) from exc
 
         _install_exact_size_assignment_workaround()
+        variants = {"small": RFDETRSmall, "medium": RFDETRMedium}
+        if variant not in variants:
+            raise ValueError(f"unsupported RF-DETR variant: {variant}")
 
         # RF-DETR 1.11.2 keeps DETR's legacy "maximum zero-based class id"
         # convention internally and constructs num_classes + 1 logits.  Passing
@@ -90,12 +151,13 @@ class RFDETRMultiTask(nn.Module):
         }
         if not pretrained:
             kwargs["pretrain_weights"] = None
-        api = RFDETRSmall(**kwargs)
+        api = variants[variant](**kwargs)
         detector = api.model.model
         if detector is None:
             raise RuntimeError("RF-DETR did not expose its underlying detection model")
 
         self.detector = detector
+        self.variant = variant
         self.postprocess = api.model.postprocess
         self.model_config = api.model_config
         self.rf_args = api.model.args

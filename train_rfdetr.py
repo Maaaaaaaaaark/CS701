@@ -1,4 +1,4 @@
-"""Fully fine-tune one RF-DETR Small model for SAR classification and detection."""
+"""Fully fine-tune one RF-DETR model for SAR classification and detection."""
 import argparse
 import json
 import math
@@ -22,6 +22,7 @@ from sarbench.rfdetr import (
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", type=Path, default=Path("cs701-sar-course-data"))
+    parser.add_argument("--variant", choices=("small", "medium"), default="small")
     parser.add_argument("--epochs", type=int, default=48)
     parser.add_argument("--batch-size", type=int, default=4, help="physical batch size per GPU")
     parser.add_argument("--grad-accum-steps", type=int, default=2)
@@ -171,7 +172,7 @@ def headline(metrics):
 def main():
     args = parse_args()
     torch.manual_seed(args.seed)
-    run_name = f"rfdetr_small_coco_full_e{args.epochs}"
+    run_name = f"rfdetr_{args.variant}_coco_full_e{args.epochs}"
     if args.seed:
         run_name += f"_seed{args.seed}"
     run_dir = args.out / run_name
@@ -192,7 +193,7 @@ def main():
         )
     )
 
-    model = RFDETRMultiTask(pretrained=True)
+    model = RFDETRMultiTask(pretrained=True, variant=args.variant, resolution=512)
     parameters = sum(parameter.numel() for parameter in model.parameters())
     trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
     write_log(f"parameters: {parameters:,} total, {trainable:,} trainable", log_file)

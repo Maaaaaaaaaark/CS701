@@ -145,7 +145,7 @@ Set the `RESUME` environment variable to that path when resubmitting. Only Image
 the PAFPN, detector and image classifier are trained from scratch on the course data.
 Run `cluster/submit_rtmdet_m_smoke.sh` first for a 32-image, one-epoch end-to-end check.
 
-### 2.5 Full-finetune RF-DETR Small
+### 2.5 Full-finetune RF-DETR Small and Medium
 
 `bash run_rfdetr_small.sh` fully fine-tunes the official COCO-pretrained RF-DETR Small detector and a new 9-class
 image-classification head. The classifier globally pools RF-DETR's P4 backbone feature through a forward hook, so
@@ -175,6 +175,28 @@ Every validation point updates `training_state_latest.pt`. If Slurm preempts a r
 `requirements-rfdetr.txt`; the official RF-DETR Small checkpoint is generic COCO pretraining, not SAR training, and
 must be named in the final report.
 
+`diagnose_rfdetr.py` reuses the Small checkpoint to compare classification-aware detection policies on the same
+local holdout without retraining. It evaluates the unchanged detector, top-100 pruning, soft image-class score
+fusion, fusion plus top-100, and a hard image-class gate. Run it on Slurm before spending a leaderboard submission:
+
+```bash
+CHECKPOINT=runs/rfdetr_small_coco_full_e48/model_best_map.pt \
+  ./cluster/submit_rfdetr_diagnostic.sh \
+  --partition=researchshort --gres=gpu:3090:1 --mem=32G --time=02:00:00
+```
+
+RF-DETR Medium is the next capacity ablation. Its native 576 input is overridden to the course-legal 512 x 512;
+the program checks the actual model remains within both parameter budgets before training. Keep all other Small
+hyperparameters unchanged so the comparison isolates the variant:
+
+```bash
+./cluster/submit_rfdetr_medium_smoke.sh \
+  --partition=researchshort --gres=gpu:3090:1 --mem=16G --time=01:00:00
+
+./cluster/submit_rfdetr_medium.sh \
+  --partition=researchshort --gres=gpu:3090:1 --mem=32G --time=24:00:00
+```
+
 ### 2.6 Use Course Data
 
 The code auto-detects the released
@@ -183,7 +205,7 @@ The code auto-detects the released
 local holdout controlled by `--val-fraction` and `--split-seed`.
 
 The released validation and test labels remain hidden, so local metrics come from the training holdout; official
-validation scores still require a Codabench submission.
+validation scores require submission to the course leaderboard.
 
 ### 2.7 Make Submission
 
@@ -195,7 +217,9 @@ ZIP, and validates the archive. On Slurm, submit `cluster/submit_prediction.sh`;
 For RTMDet-m, use `make_submission_rtmdet.py` or `cluster/submit_prediction_rtmdet_m.sh` with `CHECKPOINT` set
 to its `model_best_map.pt`.
 
-For RF-DETR Small, use `make_submission_rfdetr.py` or `cluster/submit_prediction_rfdetr_small.sh`:
+For RF-DETR, use `make_submission_rfdetr.py`, `cluster/submit_prediction_rfdetr_small.sh`, or
+`cluster/submit_prediction_rfdetr_medium.sh`. The optional `CLASS_FUSION_ALPHA`, `CLASS_GATE=1`, and `TOPK`
+environment variables reproduce a policy selected by the local diagnostic:
 
 ```bash
 CHECKPOINT=runs/rfdetr_small_coco_full_e48/model_best_map.pt \

@@ -13,13 +13,16 @@ python -m pip install -r requirements-rfdetr.txt
 python - <<'PY'
 from importlib.metadata import version
 import torch
-from rfdetr import RFDETRSmall
+from rfdetr import RFDETRMedium, RFDETRSmall
 
 print(f"PyTorch {torch.__version__}")
 print(f"RF-DETR {version('rfdetr')}")
 print(f"CUDA build: {torch.version.cuda}")
 model = RFDETRSmall(num_classes=8, num_channels=3, resolution=512)
 print("Official RF-DETR Small weights downloaded successfully")
+print(f"Detection parameters: {sum(p.numel() for p in model.model.model.parameters()):,}")
+model = RFDETRMedium(num_classes=8, num_channels=3, resolution=512)
+print("Official RF-DETR Medium weights downloaded successfully")
 print(f"Detection parameters: {sum(p.numel() for p in model.model.model.parameters()):,}")
 PY
 
