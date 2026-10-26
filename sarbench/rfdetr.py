@@ -17,6 +17,41 @@ RFDETR_IMAGE_MEAN = (0.485, 0.456, 0.406)
 RFDETR_IMAGE_STD = (0.229, 0.224, 0.225)
 
 
+def _install_exact_size_assignment_workaround() -> None:
+    """Avoid RF-DETR 1.11.2's padded CUDA assignment failure on uneven target counts.
+
+    The optimized padded path can occasionally assign a real row to a padded
+    column, after which its fixed-size split is one element short. Solving
+    batches grouped by their exact target count uses the same official solver
+    without padded columns and preserves the intended assignments.
+    """
+    from rfdetr.models import _assignment
+
+    if getattr(_assignment.assign_many_bucketed, "_cs701_exact_size", False):
+        return
+    original = _assignment.assign_many_bucketed
+
+    def assign_many_exact_size(cost_matrices, sizes, group_detr):
+        if not sizes or max(sizes) == 0:
+            return original(cost_matrices, sizes, group_detr)
+        group_widths = []
+        for cost_matrix in cost_matrices:
+            num_queries = cost_matrix.shape[0]
+            if num_queries % group_detr:
+                raise ValueError(
+                    f"num_queries ({num_queries}) must be divisible by group_detr ({group_detr})"
+                )
+            group_widths.append(num_queries // group_detr)
+        if not cost_matrices[0].is_cuda:
+            cost_matrices = [cost_matrix.cpu() for cost_matrix in cost_matrices]
+        return _assignment._assign_bucketed_by_size(
+            cost_matrices, sizes, group_widths, group_detr
+        )
+
+    assign_many_exact_size._cs701_exact_size = True
+    _assignment.assign_many_bucketed = assign_many_exact_size
+
+
 def prepare_detection_targets(targets: list[dict[str, Any]], size: int = 512) -> list[dict[str, torch.Tensor]]:
     """Convert course XYXY/category-1..9 targets to RF-DETR normalized CXCYWH/0..8 targets."""
     converted = []
@@ -42,6 +77,8 @@ class RFDETRMultiTask(nn.Module):
             raise ImportError(
                 "RF-DETR is not installed. Run cluster/setup_rfdetr.sh and activate .venv-rfdetr."
             ) from exc
+
+        _install_exact_size_assignment_workaround()
 
         # RF-DETR 1.11.2 keeps DETR's legacy "maximum zero-based class id"
         # convention internally and constructs num_classes + 1 logits.  Passing
