@@ -49,7 +49,7 @@ class RandomQuarterTurn:
 
 class SARMultiTask(Dataset):
     """The images of classification/{split}.csv with their boxes from detection/instances_{split}.json.
-    An item is (image [1, size, size], label 0..8, target), target = {'boxes': XYXY on the resized
+    An item is (image [channels, size, size], label 0..8, target), target = {'boxes': XYXY on the resized
     image, 'labels': 1..9, 'image_id': COCO id, 'orig_size': (h, w)}."""
 
     def __init__(self, root, split, train=False, size=512, limit=None, val_fraction=0.1, split_seed=0,
@@ -96,8 +96,9 @@ class SARMultiTask(Dataset):
             geometric += [v2.RandomHorizontalFlip(), v2.RandomVerticalFlip()]
         mean = [MEAN] if mean is None else list(mean)
         std = [STD] if std is None else list(std)
-        if len(mean) != 1 or len(std) != 1:
-            raise ValueError('SARMultiTask reads one-channel images, so mean and std must each have length 1')
+        if len(mean) != len(std) or len(mean) not in (1, 3):
+            raise ValueError('mean and std must have matching lengths of either 1 or 3')
+        self.image_mode = 'L' if len(mean) == 1 else 'RGB'
         self.transform = v2.Compose([
             v2.ToImage(),
             v2.ConvertBoundingBoxFormat('XYXY'),  # COCO [x, y, w, h] -> [x1, y1, x2, y2]
@@ -118,7 +119,9 @@ class SARMultiTask(Dataset):
         orig_size = (info['height'], info['width'])
         boxes = tv_tensors.BoundingBoxes([a['bbox'] for a in anns], format='XYWH', canvas_size=orig_size,
                                          dtype=torch.float32)  # integer boxes would be truncated by Resize
-        image = Image.open(self.image_root / file_name).convert('L')  # PIL also handles the release's JPEG/PNG
+        # RGB mode replicates the grayscale SAR pixels across three channels,
+        # preserving compatibility with RGB-pretrained backbones.
+        image = Image.open(self.image_root / file_name).convert(self.image_mode)
         image, boxes = self.transform(image, boxes)
         target = {'boxes': boxes, 'labels': torch.tensor([a['category_id'] for a in anns]),
                   'image_id': info['id'], 'orig_size': orig_size}

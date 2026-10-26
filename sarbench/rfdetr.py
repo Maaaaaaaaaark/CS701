@@ -13,8 +13,8 @@ from torch import nn
 from torchvision.ops import box_convert
 
 
-RFDETR_IMAGE_MEAN = (0.485,)
-RFDETR_IMAGE_STD = (0.229,)
+RFDETR_IMAGE_MEAN = (0.485, 0.456, 0.406)
+RFDETR_IMAGE_STD = (0.229, 0.224, 0.225)
 
 
 def prepare_detection_targets(targets: list[dict[str, Any]], size: int = 512) -> list[dict[str, torch.Tensor]]:
@@ -48,7 +48,7 @@ class RFDETRMultiTask(nn.Module):
         # 8 therefore gives exactly the nine course categories 0..8.
         kwargs = {
             "num_classes": num_classes - 1,
-            "num_channels": 1,
+            "num_channels": 3,
             "resolution": resolution,
         }
         if not pretrained:

@@ -150,8 +150,9 @@ Run `cluster/submit_rtmdet_m_smoke.sh` first for a 32-image, one-epoch end-to-en
 `bash run_rfdetr_small.sh` fully fine-tunes the official COCO-pretrained RF-DETR Small detector and a new 9-class
 image-classification head. The classifier globally pools RF-DETR's P4 backbone feature through a forward hook, so
 classification and detection share one DINOv2 encoder invocation and each image enters the model exactly once. Input
-is fixed at 512 x 512, multi-scale training and test-time augmentation are disabled, and the grayscale patch embedding
-is initialized by averaging the checkpoint's RGB weights. The run uses batch size 4 with two-step gradient
+is fixed at 512 x 512, multi-scale training and test-time augmentation are disabled, and each grayscale SAR image is
+replicated across three channels with RF-DETR's native ImageNet normalization so every pretrained weight loads without
+an input-channel mismatch. The run uses batch size 4 with two-step gradient
 accumulation (effective batch 8), validates every four epochs, and writes to
 `runs/rfdetr_small_coco_full_e48/`.
 

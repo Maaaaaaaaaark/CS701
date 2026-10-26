@@ -63,8 +63,9 @@ class SubmissionImages(Dataset):
         self.root, self.images = Path(root), images
         mean = [MEAN] if mean is None else list(mean)
         std = [STD] if std is None else list(std)
-        if len(mean) != 1 or len(std) != 1:
-            raise ValueError("SubmissionImages reads grayscale images; mean and std must each have length 1")
+        if len(mean) != len(std) or len(mean) not in (1, 3):
+            raise ValueError("mean and std must have matching lengths of either 1 or 3")
+        self.image_mode = "L" if len(mean) == 1 else "RGB"
         self.transform = v2.Compose([
             v2.ToImage(),
             v2.Resize((size, size)),
@@ -77,7 +78,7 @@ class SubmissionImages(Dataset):
 
     def __getitem__(self, index):
         file_name = self.images[index]["file_name"]
-        image = Image.open(self.root / file_name).convert("L")
+        image = Image.open(self.root / file_name).convert(self.image_mode)
         return self.transform(image), file_name
 
 
