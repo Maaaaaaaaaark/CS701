@@ -1,4 +1,4 @@
-"""Create a Codabench ZIP from a trained full-finetuned RF-DETR Small checkpoint."""
+"""Create a CS701 submission ZIP from a full-finetuned RF-DETR Small checkpoint."""
 import argparse
 import json
 from pathlib import Path

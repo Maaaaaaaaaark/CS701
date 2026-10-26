@@ -1,4 +1,4 @@
-"""Run a trained model on the released validation images and create a Codabench submission ZIP."""
+"""Run a trained model on released images and create a CS701 submission ZIP."""
 import argparse
 import csv
 import io
@@ -12,10 +12,7 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision.transforms import v2
 from tqdm import tqdm
 
-from sarbench.adapters import add_adapters
-from sarbench.backbones import build_backbone
 from sarbench.data import MEAN, STD
-from sarbench.model import MultiTaskModel
 
 
 def write_submission(images, preds, size=512, out="submission.zip"):
@@ -101,6 +98,12 @@ def parse_args():
 
 @torch.inference_mode()
 def main():
+    # Keep DINOv3-only dependencies out of module import so the lightweight ZIP
+    # helpers can also be reused from the isolated RF-DETR environment.
+    from sarbench.adapters import add_adapters
+    from sarbench.backbones import build_backbone
+    from sarbench.model import MultiTaskModel
+
     args = parse_args()
     device = torch.device(args.device)
     if device.type == "cuda" and not torch.cuda.is_available():
