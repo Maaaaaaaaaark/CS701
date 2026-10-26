@@ -3,6 +3,7 @@ import argparse
 import csv
 import io
 import json
+import math
 import zipfile
 from pathlib import Path
 
@@ -16,16 +17,23 @@ from sarbench.data import MEAN, STD
 
 
 def write_submission(images, preds, size=512, out="submission.zip"):
-    """Write zero-based class predictions and input-sized XYXY boxes to Codabench format."""
+    """Write zero-based class predictions and input-sized XYXY boxes to the course format."""
     rows, dets = ["image_id,label"], []
     for im in images:
         label, boxes, classes, scores = preds[im["file_name"]]
         rows.append(f"{im['id']},{int(label)}")
         sx, sy = im["width"] / size, im["height"] / size
         for (x1, y1, x2, y2), c, s in zip(boxes, classes, scores):
+            x1, y1, x2, y2, s = (float(value) for value in (x1, y1, x2, y2, s))
+            if not all(math.isfinite(value) for value in (x1, y1, x2, y2, s)):
+                continue
+            x1, x2 = (min(max(value, 0.0), size) for value in (x1, x2))
+            y1, y2 = (min(max(value, 0.0), size) for value in (y1, y2))
+            if x2 <= x1 or y2 <= y1 or not 0.0 <= s <= 1.0:
+                continue
             box = [x1 * sx, y1 * sy, (x2 - x1) * sx, (y2 - y1) * sy]
             dets.append({"image_id": im["id"], "category_id": int(c) + 1,
-                         "bbox": [float(v) for v in box], "score": float(s)})
+                         "bbox": [float(v) for v in box], "score": s})
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as z:
@@ -47,10 +55,16 @@ def validate_submission(path, images):
     if any(not 0 <= int(row["label"]) <= 8 for row in rows):
         raise ValueError("classification labels must be in 0..8")
     for detection in detections:
+        bbox = [float(value) for value in detection["bbox"]]
+        score = float(detection["score"])
         if (int(detection["image_id"]) not in expected_ids
                 or not 1 <= int(detection["category_id"]) <= 9
-                or len(detection["bbox"]) != 4
-                or not 0 <= float(detection["score"]) <= 1):
+                or len(bbox) != 4
+                or not all(math.isfinite(value) for value in bbox)
+                or bbox[2] <= 0
+                or bbox[3] <= 0
+                or not math.isfinite(score)
+                or not 0 <= score <= 1):
             raise ValueError(f"invalid detection: {detection}")
     return len(rows), len(detections)
 
