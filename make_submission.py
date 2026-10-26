@@ -59,13 +59,17 @@ def validate_submission(path, images):
 
 
 class SubmissionImages(Dataset):
-    def __init__(self, root, images, size=512):
+    def __init__(self, root, images, size=512, mean=None, std=None):
         self.root, self.images = Path(root), images
+        mean = [MEAN] if mean is None else list(mean)
+        std = [STD] if std is None else list(std)
+        if len(mean) != 1 or len(std) != 1:
+            raise ValueError("SubmissionImages reads grayscale images; mean and std must each have length 1")
         self.transform = v2.Compose([
             v2.ToImage(),
             v2.Resize((size, size)),
             v2.ToDtype(torch.float32, scale=True),
-            v2.Normalize([MEAN], [STD]),
+            v2.Normalize(mean, std),
         ])
 
     def __len__(self):

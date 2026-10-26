@@ -53,7 +53,7 @@ class SARMultiTask(Dataset):
     image, 'labels': 1..9, 'image_id': COCO id, 'orig_size': (h, w)}."""
 
     def __init__(self, root, split, train=False, size=512, limit=None, val_fraction=0.1, split_seed=0,
-                 rotation90=False):
+                 rotation90=False, mean=None, std=None):
         self.root = Path(root)
         self.official_layout = (self.root / 'train' / 'labels.csv').exists()
         if self.official_layout:
@@ -94,13 +94,17 @@ class SARMultiTask(Dataset):
             if rotation90:
                 geometric.append(RandomQuarterTurn())
             geometric += [v2.RandomHorizontalFlip(), v2.RandomVerticalFlip()]
+        mean = [MEAN] if mean is None else list(mean)
+        std = [STD] if std is None else list(std)
+        if len(mean) != 1 or len(std) != 1:
+            raise ValueError('SARMultiTask reads one-channel images, so mean and std must each have length 1')
         self.transform = v2.Compose([
             v2.ToImage(),
             v2.ConvertBoundingBoxFormat('XYXY'),  # COCO [x, y, w, h] -> [x1, y1, x2, y2]
             v2.Resize((size, size)),  # stretches non-square images; boxes are scaled with the pixels
             *geometric,  # overhead imagery has no canonical "up"
             v2.ToDtype(torch.float32, scale=True),
-            v2.Normalize([MEAN], [STD]),
+            v2.Normalize(mean, std),
         ])
 
     def __len__(self):

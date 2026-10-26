@@ -4,6 +4,7 @@ __pycache__/
 .DS_Store
 cs701-sar-course-data/
 .venv/
+.venv-rfdetr/
 .cache/
 .tmp/
 logs/

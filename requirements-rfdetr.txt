@@ -1,0 +1,6 @@
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.9.0
+torchvision==0.24.0
+rfdetr[train]==1.11.2
+pycocotools==2.0.11
+pytest==9.1.1

@@ -145,7 +145,36 @@ Set the `RESUME` environment variable to that path when resubmitting. Only Image
 the PAFPN, detector and image classifier are trained from scratch on the course data.
 Run `cluster/submit_rtmdet_m_smoke.sh` first for a 32-image, one-epoch end-to-end check.
 
-### 2.5 Use Course Data
+### 2.5 Full-finetune RF-DETR Small
+
+`bash run_rfdetr_small.sh` fully fine-tunes the official COCO-pretrained RF-DETR Small detector and a new 9-class
+image-classification head. The classifier globally pools RF-DETR's P4 backbone feature through a forward hook, so
+classification and detection share one DINOv2 encoder invocation and each image enters the model exactly once. Input
+is fixed at 512 x 512, multi-scale training and test-time augmentation are disabled, and the grayscale patch embedding
+is initialized by averaging the checkpoint's RGB weights. The run uses batch size 4 with two-step gradient
+accumulation (effective batch 8), validates every four epochs, and writes to
+`runs/rfdetr_small_coco_full_e48/`.
+
+RF-DETR has an isolated environment because its Transformers/Lightning requirements differ from the DINOv3 stack:
+
+```bash
+bash cluster/setup_rfdetr.sh
+
+# Always run this first. It uses 32 images for one epoch.
+./cluster/submit_rfdetr_small_smoke.sh \
+  --partition=researchshort --gres=gpu:a5000:1 --mem=16G --time=01:00:00
+
+# Submit only after the smoke job exits successfully.
+./cluster/submit_rfdetr_small.sh \
+  --partition=researchshort --gres=gpu:a5000:1 --mem=32G --time=24:00:00
+```
+
+Every validation point updates `training_state_latest.pt`. If Slurm preempts a run, resubmit with
+`RESUME=runs/rfdetr_small_coco_full_e48/training_state_latest.pt`. RF-DETR 1.11.2 is pinned in
+`requirements-rfdetr.txt`; the official RF-DETR Small checkpoint is generic COCO pretraining, not SAR training, and
+must be named in the final report.
+
+### 2.6 Use Course Data
 
 The code auto-detects the released
 [course data](https://huggingface.co/datasets/doem1997/cs701-sar-course-data) when it is placed at
@@ -155,7 +184,7 @@ local holdout controlled by `--val-fraction` and `--split-seed`.
 The released validation and test labels remain hidden, so local metrics come from the training holdout; official
 validation scores still require a Codabench submission.
 
-### 2.6 Make Submission
+### 2.7 Make Submission
 
 Extract `val.tar.gz`, then run `make_submission.py` with the trained checkpoint. It normalizes the validation
 images exactly as in training, maps predicted boxes back to original pixels, writes the two required files into a
@@ -164,6 +193,14 @@ ZIP, and validates the archive. On Slurm, submit `cluster/submit_prediction.sh`;
 
 For RTMDet-m, use `make_submission_rtmdet.py` or `cluster/submit_prediction_rtmdet_m.sh` with `CHECKPOINT` set
 to its `model_best_map.pt`.
+
+For RF-DETR Small, use `make_submission_rfdetr.py` or `cluster/submit_prediction_rfdetr_small.sh`:
+
+```bash
+CHECKPOINT=runs/rfdetr_small_coco_full_e48/model_best_map.pt \
+  ./cluster/submit_prediction_rfdetr_small.sh \
+  --partition=researchshort --gres=gpu:a5000:1 --mem=16G --time=02:00:00
+```
 
 ## 3. Baseline Results (for reference)
 
@@ -207,15 +244,18 @@ Accuracy and AP50: [docs/DETAILS.md](docs/DETAILS.md#results-in-full).
 ```
 train.py              entry: train + evaluate one configuration
 train_rtmdet.py       full-finetune CSPNeXt-m/RTMDet + evaluate + resumable checkpoints
+train_rfdetr.py       full-finetune RF-DETR Small + shared classifier + resumable checkpoints
 run_all.sh            the eight reference runs (calls train.py)
 make_submission.py    write_submission(): predictions -> submission.zip
 make_submission_rtmdet.py  RTMDet checkpoint -> submission.zip
+make_submission_rfdetr.py  RF-DETR checkpoint -> submission.zip
 sarbench/             the code behind train.py
 ├── data.py           images + boxes at 512 × 512, flips; boxes back to original pixels
 ├── backbones.py      ViT (ImageNet-21k), TerraMind-1.0-base, DINOv3 ViT-B/16
 ├── adapters.py       LoRA, MoE-LoRA on a frozen backbone
 ├── model.py          backbone + class head + ViTDet feature pyramid + Faster R-CNN
 ├── rtmdet.py         CSPNeXt-m + PAFPN + shared SepBN RTMDet head + image classifier
+├── rfdetr.py         official RF-DETR Small + shared P4 image classifier
 └── metrics.py        accuracy, macro-F1, COCO box AP
 tests/                checks of sarbench/ (python -m pytest tests)
 docs/DETAILS.md       model, training protocol, design notes, time and memory
