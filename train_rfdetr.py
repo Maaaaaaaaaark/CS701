@@ -30,6 +30,12 @@ def parse_args():
     parser.add_argument("--encoder-lr", type=float, default=1.5e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--classification-weight", type=float, default=1.0)
+    parser.add_argument(
+        "--box-loss-scale",
+        type=float,
+        default=1.0,
+        help="extra multiplier for all weighted bbox and GIoU losses",
+    )
     parser.add_argument("--eval-every", type=int, default=4)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--limit", type=int)
@@ -50,6 +56,8 @@ def parse_args():
         parser.error("--val-fraction must be between 0 and 1")
     if args.keep_last_checkpoints < 0:
         parser.error("--keep-last-checkpoints cannot be negative")
+    if args.classification_weight < 0 or args.box_loss_scale <= 0:
+        parser.error("--classification-weight must be non-negative and --box-loss-scale positive")
     return args
 
 
@@ -104,7 +112,11 @@ def train_one_epoch(model, loader, optimizer, scheduler, epoch, args, log_file):
         with torch.autocast("cuda", dtype=torch.bfloat16):
             logits, outputs = model(images)
             classification_loss = F.cross_entropy(logits, labels)
-            detection_loss, detection_parts = model.detection_losses(outputs, targets)
+            detection_loss, detection_parts = model.detection_losses(
+                outputs,
+                targets,
+                box_loss_scale=args.box_loss_scale,
+            )
             loss = args.classification_weight * classification_loss + detection_loss
 
         in_final_partial_window = remainder and step > len(loader) - remainder

@@ -208,11 +208,18 @@ class RFDETRMultiTask(nn.Module):
         return logits, outputs
 
     def detection_losses(
-        self, outputs: dict[str, torch.Tensor], targets: list[dict[str, torch.Tensor]]
+        self,
+        outputs: dict[str, torch.Tensor],
+        targets: list[dict[str, torch.Tensor]],
+        box_loss_scale: float = 1.0,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        if box_loss_scale <= 0:
+            raise ValueError("box_loss_scale must be positive")
         loss_dict = self.criterion(outputs, targets)
         weighted = {
-            name: value * self.criterion.weight_dict[name]
+            name: value
+            * self.criterion.weight_dict[name]
+            * (box_loss_scale if name.startswith(("loss_bbox", "loss_giou")) else 1.0)
             for name, value in loss_dict.items()
             if name in self.criterion.weight_dict
         }
