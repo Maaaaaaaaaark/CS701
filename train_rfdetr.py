@@ -39,6 +39,10 @@ def parse_args():
     parser.add_argument("--keep-last-checkpoints", type=int, default=3)
     parser.add_argument("--resume", type=Path, help="resume a complete RF-DETR training-state checkpoint")
     parser.add_argument("--out", type=Path, default=Path("runs"))
+    parser.add_argument(
+        "--run-name",
+        help="optional output directory name; defaults to the variant and epoch count",
+    )
     args = parser.parse_args()
     if args.epochs < 1 or args.eval_every < 1 or args.grad_accum_steps < 1:
         parser.error("--epochs, --eval-every and --grad-accum-steps must be positive")
@@ -172,8 +176,8 @@ def headline(metrics):
 def main():
     args = parse_args()
     torch.manual_seed(args.seed)
-    run_name = f"rfdetr_{args.variant}_coco_full_e{args.epochs}"
-    if args.seed:
+    run_name = args.run_name or f"rfdetr_{args.variant}_coco_full_e{args.epochs}"
+    if args.seed and not args.run_name:
         run_name += f"_seed{args.seed}"
     run_dir = args.out / run_name
     run_dir.mkdir(parents=True, exist_ok=True)

@@ -197,6 +197,16 @@ hyperparameters unchanged so the comparison isolates the variant:
   --partition=researchshort --gres=gpu:3090:1 --mem=32G --time=24:00:00
 ```
 
+After comparing model capacity, the detection-prioritized Small ablation keeps the stronger Small architecture and
+changes only the image-classification loss weight from 1.0 to 0.25. It writes to
+`runs/rfdetr_small_coco_full_e48_cw025/`, leaving the original Small checkpoint untouched:
+
+```bash
+BATCH_SIZE=4 GRAD_ACCUM_STEPS=2 WORKERS=8 \
+  ./cluster/submit_rfdetr_small_cw025.sh \
+  --partition=researchshort --gres=gpu:3090:1 --mem=40G --time=12:00:00
+```
+
 ### 2.6 Use Course Data
 
 The code auto-detects the released

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$PROJECT_ROOT"
+mkdir -p logs runs
+export RUN_SCRIPT=run_rfdetr_small_cw025.sh
+sbatch --job-name=cs701-rfdetr-cw025 "$@" cluster/train_rfdetr_small.slurm
