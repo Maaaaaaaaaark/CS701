@@ -23,6 +23,11 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", type=Path, default=Path("cs701-sar-course-data"))
     parser.add_argument("--variant", choices=("small", "medium"), default="small")
+    parser.add_argument(
+        "--detail-fusion",
+        action="store_true",
+        help="inject a raw-pixel stride-4/8 SAR detail branch into RF-DETR projector features",
+    )
     parser.add_argument("--epochs", type=int, default=48)
     parser.add_argument("--batch-size", type=int, default=4, help="physical batch size per GPU")
     parser.add_argument("--grad-accum-steps", type=int, default=2)
@@ -209,7 +214,12 @@ def main():
         )
     )
 
-    model = RFDETRMultiTask(pretrained=True, variant=args.variant, resolution=512)
+    model = RFDETRMultiTask(
+        pretrained=True,
+        variant=args.variant,
+        resolution=512,
+        detail_fusion=args.detail_fusion,
+    )
     parameters = sum(parameter.numel() for parameter in model.parameters())
     trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
     write_log(f"parameters: {parameters:,} total, {trainable:,} trainable", log_file)

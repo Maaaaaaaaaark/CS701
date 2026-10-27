@@ -21,6 +21,11 @@ def parse_args():
     parser.add_argument("--data", type=Path, default=Path("cs701-sar-course-data/val"))
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--variant", choices=("small", "medium"), default="small")
+    parser.add_argument(
+        "--detail-fusion",
+        action="store_true",
+        help="construct the RF-DETR SAR detail branch used by the checkpoint",
+    )
     parser.add_argument("--output", type=Path, default=Path("submissions/rfdetr_small_val.zip"))
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--workers", type=int, default=4)
@@ -65,7 +70,12 @@ def main():
     # setup_rfdetr.sh caches the official starter checkpoint inside the project;
     # constructing the identical architecture this way also avoids a separate
     # DINOv2-backbone download before the trained state is loaded.
-    model = RFDETRMultiTask(pretrained=True, variant=args.variant, resolution=512)
+    model = RFDETRMultiTask(
+        pretrained=True,
+        variant=args.variant,
+        resolution=512,
+        detail_fusion=args.detail_fusion,
+    )
     model.load_state_dict(torch.load(args.checkpoint, map_location="cpu", weights_only=True))
     model.to(device).eval()
 

@@ -221,6 +221,21 @@ BATCH_SIZE=4 GRAD_ACCUM_STEPS=2 WORKERS=8 \
   --partition=researchshort --gres=gpu:3090:1 --mem=40G --time=12:00:00
 ```
 
+The SAR-detail ablation keeps the pretrained Small decoder interface unchanged and extracts raw-pixel stride-4,
+stride-8 and stride-16 features before patch embedding. The multi-scale detail is pooled onto the existing P4 grid
+and injected through a learned residual, so all COCO-pretrained RF-DETR weights still load while sub-patch SAR edges
+can influence detection. It writes to `runs/rfdetr_small_coco_full_e48_sar_detail/`:
+
+```bash
+BATCH_SIZE=2 WORKERS=2 \
+  ./cluster/submit_rfdetr_small_sar_detail_smoke.sh \
+  --partition=researchshort --gres=gpu:3090:1 --mem=16G --time=01:00:00
+
+BATCH_SIZE=4 GRAD_ACCUM_STEPS=2 WORKERS=8 \
+  ./cluster/submit_rfdetr_small_sar_detail.sh \
+  --partition=researchshort --gres=gpu:3090:1 --mem=40G --time=12:00:00
+```
+
 ### 2.6 Use Course Data
 
 The code auto-detects the released

@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 from torchvision.ops import box_convert
 
@@ -16,6 +17,84 @@ from torchvision.ops import box_convert
 RFDETR_IMAGE_MEAN = (0.485, 0.456, 0.406)
 RFDETR_IMAGE_STD = (0.229, 0.224, 0.225)
 RFDETRVariant = Literal["small", "medium"]
+
+
+class SARDetailFusion(nn.Module):
+    """Preserve sub-patch SAR detail and inject it into RF-DETR projector levels.
+
+    RF-DETR Small exposes only a stride-16 P4 feature to its decoder. This branch
+    extracts stride-4, stride-8 and stride-16 features directly from grayscale
+    pixels, pools all three onto each existing projector grid, and adds a learned
+    residual. Keeping the projector interface intact preserves every pretrained
+    decoder weight.
+    """
+
+    def __init__(self, hidden_dim: int, num_levels: int):
+        super().__init__()
+        if hidden_dim % 32:
+            raise ValueError("hidden_dim must be divisible by 32")
+        self.to_stride2 = nn.Sequential(
+            nn.Conv2d(1, 32, 7, stride=2, padding=3, bias=False),
+            nn.GroupNorm(8, 32),
+            nn.GELU(),
+        )
+        self.to_stride4 = nn.Sequential(
+            nn.Conv2d(32, 64, 3, stride=2, padding=1, bias=False),
+            nn.GroupNorm(8, 64),
+            nn.GELU(),
+        )
+        self.to_stride8 = nn.Sequential(
+            nn.Conv2d(64, 128, 3, stride=2, padding=1, bias=False),
+            nn.GroupNorm(16, 128),
+            nn.GELU(),
+        )
+        self.to_stride16 = nn.Sequential(
+            nn.Conv2d(128, hidden_dim, 3, stride=2, padding=1, bias=False),
+            nn.GroupNorm(32, hidden_dim),
+            nn.GELU(),
+        )
+        combined_dim = 64 + 128 + hidden_dim
+        self.combine = nn.Sequential(
+            nn.Conv2d(combined_dim, hidden_dim, 1, bias=False),
+            nn.GroupNorm(32, hidden_dim),
+            nn.GELU(),
+        )
+        self.level_adapters = nn.ModuleList(
+            nn.Conv2d(hidden_dim, hidden_dim, 1, bias=False) for _ in range(num_levels)
+        )
+        # Start close to the pretrained detector while allowing gradients to
+        # reach the whole detail branch on the first optimizer step.
+        self.level_gates = nn.Parameter(torch.full((num_levels,), 0.1))
+
+    def forward(
+        self,
+        normalized_rgb: torch.Tensor,
+        target_shapes: list[tuple[int, int]],
+    ) -> list[torch.Tensor]:
+        if len(target_shapes) != len(self.level_adapters):
+            raise ValueError(
+                f"expected {len(self.level_adapters)} projector levels, got {len(target_shapes)}"
+            )
+        # The grayscale SAR image was replicated to RGB and ImageNet-normalized.
+        # Recover its original [0, 1] intensity exactly from channel zero.
+        gray = normalized_rgb[:, :1] * RFDETR_IMAGE_STD[0] + RFDETR_IMAGE_MEAN[0]
+        stride2 = self.to_stride2(gray)
+        stride4 = self.to_stride4(stride2)
+        stride8 = self.to_stride8(stride4)
+        stride16 = self.to_stride16(stride8)
+        outputs = []
+        for index, shape in enumerate(target_shapes):
+            multi_scale = torch.cat(
+                [
+                    F.adaptive_avg_pool2d(stride4, shape),
+                    F.adaptive_avg_pool2d(stride8, shape),
+                    F.adaptive_avg_pool2d(stride16, shape),
+                ],
+                dim=1,
+            )
+            detail = self.level_adapters[index](self.combine(multi_scale))
+            outputs.append(detail * self.level_gates[index])
+        return outputs
 
 
 def _install_exact_size_assignment_workaround() -> None:
@@ -125,6 +204,7 @@ class RFDETRMultiTask(nn.Module):
         pretrained: bool = True,
         resolution: int = 512,
         variant: RFDETRVariant = "small",
+        detail_fusion: bool = False,
     ):
         super().__init__()
         try:
@@ -161,6 +241,9 @@ class RFDETRMultiTask(nn.Module):
         self.postprocess = api.model.postprocess
         self.model_config = api.model_config
         self.rf_args = api.model.args
+        hidden_dim = int(self.model_config.hidden_dim)
+        num_levels = len(self.model_config.projector_scale)
+        self.detail_fusion = SARDetailFusion(hidden_dim, num_levels) if detail_fusion else None
         train_config = TrainConfig(
             dataset_dir=None,
             output_dir="output",
@@ -170,7 +253,6 @@ class RFDETRMultiTask(nn.Module):
         )
         self.criterion, _ = build_criterion_from_config(self.model_config, train_config)
 
-        hidden_dim = int(self.model_config.hidden_dim)
         self.classifier = nn.Sequential(
             nn.LayerNorm(hidden_dim),
             nn.Dropout(0.1),
@@ -180,13 +262,42 @@ class RFDETRMultiTask(nn.Module):
         nn.init.zeros_(self.classifier[-1].bias)
 
         self._shared_feature = None
-        self._feature_hook = self.detector.backbone.register_forward_hook(self._capture_backbone_feature)
+        self._detail_input = None
+        self._detail_input_hook = self.detector.backbone.register_forward_pre_hook(
+            self._capture_detail_input
+        )
+        self._feature_hook = self.detector.backbone.register_forward_hook(
+            self._fuse_and_capture_backbone_feature
+        )
 
-    def _capture_backbone_feature(self, _module, _inputs, output):
-        features = output[0]
+    def _capture_detail_input(self, _module, inputs):
+        tensor_list = inputs[0]
+        self._detail_input = tensor_list.tensors if hasattr(tensor_list, "tensors") else tensor_list
+
+    def _fuse_and_capture_backbone_feature(self, _module, _inputs, output):
+        features, positions, cross_attn_features = output
         if not features:
             raise RuntimeError("RF-DETR backbone returned no feature maps")
+        if self.detail_fusion is not None:
+            if self._detail_input is None:
+                raise RuntimeError("RF-DETR detail fusion did not capture the input image")
+            details = self.detail_fusion(
+                self._detail_input,
+                [feature.tensors.shape[-2:] for feature in features],
+            )
+            fused_features = []
+            for feature, detail in zip(features, details):
+                fused_features.append(
+                    type(feature)(
+                        feature.tensors + detail.to(feature.tensors.dtype),
+                        feature.mask,
+                        feature.no_padding,
+                    )
+                )
+            features = fused_features
         self._shared_feature = features[-1]
+        self._detail_input = None
+        return features, positions, cross_attn_features
 
     @staticmethod
     def _masked_average(feature) -> torch.Tensor:
@@ -249,4 +360,8 @@ class RFDETRMultiTask(nn.Module):
         args.lr_component_decay = component_decay
         groups = get_param_dict(args, self.detector)
         groups.append({"params": list(self.classifier.parameters()), "lr": lr, "weight_decay": weight_decay})
+        if self.detail_fusion is not None:
+            groups.append(
+                {"params": list(self.detail_fusion.parameters()), "lr": lr, "weight_decay": weight_decay}
+            )
         return groups

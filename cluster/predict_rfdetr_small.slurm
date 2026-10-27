@@ -27,6 +27,9 @@ fi
 if [[ -n "${TOPK:-}" ]]; then
   EXTRA_ARGS+=(--topk "$TOPK")
 fi
+if [[ "${DETAIL_FUSION:-0}" == "1" ]]; then
+  EXTRA_ARGS+=(--detail-fusion)
+fi
 python make_submission_rfdetr.py \
   --data cs701-sar-course-data/val \
   --checkpoint "$CHECKPOINT" \
