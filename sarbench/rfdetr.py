@@ -6,12 +6,13 @@ the course requirement that each image enters the model only once.
 """
 from __future__ import annotations
 
+import math
 from typing import Any, Literal
 
 import torch
 import torch.nn.functional as F
 from torch import nn
-from torchvision.ops import box_convert
+from torchvision.ops import batched_nms, box_convert, box_iou, generalized_box_iou_loss
 
 
 RFDETR_IMAGE_MEAN = (0.485, 0.456, 0.406)
@@ -95,6 +96,182 @@ class SARDetailFusion(nn.Module):
             detail = self.level_adapters[index](self.combine(multi_scale))
             outputs.append(detail * self.level_gates[index])
         return outputs
+
+
+class SmallObjectHead(nn.Module):
+    """Stride-4 anchor-free head for objects smaller than a ViT patch."""
+
+    def __init__(
+        self,
+        num_classes: int = 9,
+        input_size: int = 512,
+        max_object_size: float = 32.0,
+        score_threshold: float = 0.05,
+        detections_per_image: int = 100,
+    ):
+        super().__init__()
+        self.num_classes = num_classes
+        self.input_size = input_size
+        self.max_object_size = max_object_size
+        self.score_threshold = score_threshold
+        self.detections_per_image = detections_per_image
+        self.stem = nn.Sequential(
+            nn.Conv2d(1, 32, 5, stride=2, padding=2, bias=False),
+            nn.GroupNorm(8, 32),
+            nn.GELU(),
+            nn.Conv2d(32, 64, 3, stride=2, padding=1, bias=False),
+            nn.GroupNorm(8, 64),
+            nn.GELU(),
+            nn.Conv2d(64, 96, 3, padding=1, bias=False),
+            nn.GroupNorm(12, 96),
+            nn.GELU(),
+            nn.Conv2d(96, 96, 3, padding=1, bias=False),
+            nn.GroupNorm(12, 96),
+            nn.GELU(),
+        )
+        self.class_logits = nn.Conv2d(96, num_classes, 1)
+        self.box_ltrb = nn.Conv2d(96, 4, 1)
+        prior_probability = 0.01
+        nn.init.constant_(
+            self.class_logits.bias,
+            -math.log((1 - prior_probability) / prior_probability),
+        )
+        nn.init.normal_(self.class_logits.weight, std=0.01)
+        nn.init.zeros_(self.box_ltrb.weight)
+        nn.init.constant_(self.box_ltrb.bias, -0.4)
+
+    def forward(self, normalized_rgb: torch.Tensor) -> dict[str, torch.Tensor]:
+        gray = normalized_rgb[:, :1] * RFDETR_IMAGE_STD[0] + RFDETR_IMAGE_MEAN[0]
+        features = self.stem(gray)
+        return {
+            "class_logits": self.class_logits(features),
+            "box_ltrb": self.box_ltrb(features),
+        }
+
+    @staticmethod
+    def _focal_loss(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        logits, targets = logits.float(), targets.float()
+        probabilities = logits.sigmoid()
+        cross_entropy = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
+        target_probabilities = probabilities * targets + (1 - probabilities) * (1 - targets)
+        alpha = 0.25 * targets + 0.75 * (1 - targets)
+        return (alpha * (1 - target_probabilities).pow(2) * cross_entropy).sum()
+
+    def losses(
+        self,
+        outputs: dict[str, torch.Tensor],
+        targets: list[dict[str, torch.Tensor]],
+    ) -> dict[str, torch.Tensor]:
+        logits = outputs["class_logits"]
+        raw_ltrb = outputs["box_ltrb"]
+        batch, _, height, width = logits.shape
+        heatmap = logits.new_zeros(logits.shape, dtype=torch.float32)
+        positive_batches, positive_ys, positive_xs = [], [], []
+        regression_target_parts, normalized_gt_box_parts = [], []
+
+        for batch_index, target in enumerate(targets):
+            boxes = target["boxes"].float()
+            labels = target["labels"].long()
+            if boxes.numel() == 0:
+                continue
+            small = boxes[:, 2:].amax(dim=1) * self.input_size <= self.max_object_size
+            boxes, labels = boxes[small], labels[small]
+            if boxes.numel() == 0:
+                continue
+            center_x, center_y, box_width, box_height = boxes.unbind(dim=1)
+            x_indices = (center_x * width).long().clamp(0, width - 1)
+            y_indices = (center_y * height).long().clamp(0, height - 1)
+            keys = labels * height * width + y_indices * width + x_indices
+            _, inverse = torch.unique(keys, sorted=False, return_inverse=True)
+            positions = torch.arange(len(keys), device=boxes.device)
+            first = torch.full(
+                (len(keys),),
+                len(keys),
+                dtype=torch.long,
+                device=boxes.device,
+            )
+            first.scatter_reduce_(0, inverse, positions, reduce="amin", include_self=True)
+            first = first[first < len(keys)]
+            boxes, labels = boxes[first], labels[first]
+            center_x, center_y, box_width, box_height = boxes.unbind(dim=1)
+            x_indices, y_indices = x_indices[first], y_indices[first]
+            cell_x, cell_y = x_indices.float() + 0.5, y_indices.float() + 0.5
+            x1 = (center_x - box_width / 2) * width
+            y1 = (center_y - box_height / 2) * height
+            x2 = (center_x + box_width / 2) * width
+            y2 = (center_y + box_height / 2) * height
+            heatmap[batch_index, labels, y_indices, x_indices] = 1
+            positive_batches.append(torch.full_like(x_indices, batch_index))
+            positive_ys.append(y_indices)
+            positive_xs.append(x_indices)
+            regression_target_parts.append(
+                torch.stack([cell_x - x1, cell_y - y1, x2 - cell_x, y2 - cell_y], dim=1).clamp_min(0.01)
+            )
+            normalized_gt_box_parts.append(torch.stack([x1 / width, y1 / height, x2 / width, y2 / height], dim=1))
+
+        positive_count = sum(len(part) for part in regression_target_parts)
+        normalizer = max(positive_count, 1)
+        classification = self._focal_loss(logits, heatmap) / normalizer
+        if not regression_target_parts:
+            zero = raw_ltrb.sum() * 0
+            return {"loss_small_cls": classification, "loss_small_l1": zero, "loss_small_giou": zero}
+
+        batch_indices = torch.cat(positive_batches)
+        y_indices = torch.cat(positive_ys)
+        x_indices = torch.cat(positive_xs)
+        predicted_ltrb = F.softplus(raw_ltrb.float().permute(0, 2, 3, 1)[batch_indices, y_indices, x_indices])
+        target_ltrb = torch.cat(regression_target_parts)
+        l1 = F.smooth_l1_loss(predicted_ltrb, target_ltrb, reduction="sum") / normalizer
+
+        cell_x = x_indices.float() + 0.5
+        cell_y = y_indices.float() + 0.5
+        predicted_boxes = torch.stack(
+            [
+                (cell_x - predicted_ltrb[:, 0]) / width,
+                (cell_y - predicted_ltrb[:, 1]) / height,
+                (cell_x + predicted_ltrb[:, 2]) / width,
+                (cell_y + predicted_ltrb[:, 3]) / height,
+            ],
+            dim=1,
+        )
+        gt_boxes = torch.cat(normalized_gt_box_parts)
+        giou = generalized_box_iou_loss(predicted_boxes, gt_boxes, reduction="sum") / normalizer
+        return {"loss_small_cls": classification, "loss_small_l1": l1, "loss_small_giou": giou}
+
+    def detections(self, outputs: dict[str, torch.Tensor], size: int = 512) -> list[dict[str, torch.Tensor]]:
+        logits = outputs["class_logits"].float()
+        ltrb = F.softplus(outputs["box_ltrb"].float())
+        batch, classes, height, width = logits.shape
+        results = []
+        for batch_index in range(batch):
+            scores = logits[batch_index].sigmoid().permute(1, 2, 0).reshape(-1)
+            top_count = min(self.detections_per_image * 4, scores.numel())
+            scores, indices = torch.topk(scores, top_count)
+            keep = scores >= self.score_threshold
+            scores, indices = scores[keep], indices[keep]
+            labels = indices.remainder(classes)
+            cells = torch.div(indices, classes, rounding_mode="floor")
+            y_indices = torch.div(cells, width, rounding_mode="floor")
+            x_indices = cells.remainder(width)
+            distances = ltrb[batch_index, :, y_indices, x_indices].T
+            stride_x, stride_y = size / width, size / height
+            center_x = (x_indices.float() + 0.5) * stride_x
+            center_y = (y_indices.float() + 0.5) * stride_y
+            boxes = torch.stack(
+                [
+                    center_x - distances[:, 0] * stride_x,
+                    center_y - distances[:, 1] * stride_y,
+                    center_x + distances[:, 2] * stride_x,
+                    center_y + distances[:, 3] * stride_y,
+                ],
+                dim=1,
+            ).clamp(0, size)
+            dimensions = boxes[:, 2:] - boxes[:, :2]
+            valid = (dimensions > 0).all(dim=1) & (dimensions.amax(dim=1) <= self.max_object_size * 1.5)
+            boxes, labels, scores = boxes[valid], labels[valid], scores[valid]
+            keep = batched_nms(boxes, scores, labels, 0.5)[: self.detections_per_image]
+            results.append({"boxes": boxes[keep], "labels": labels[keep], "scores": scores[keep]})
+        return results
 
 
 def _install_exact_size_assignment_workaround() -> None:
@@ -206,6 +383,9 @@ class RFDETRMultiTask(nn.Module):
         variant: RFDETRVariant = "small",
         detail_fusion: bool = False,
         detail_classifier_fusion: bool = True,
+        small_object_head: bool = False,
+        small_object_max_size: float = 32.0,
+        small_object_score_threshold: float = 0.05,
     ):
         super().__init__()
         try:
@@ -246,6 +426,16 @@ class RFDETRMultiTask(nn.Module):
         num_levels = len(self.model_config.projector_scale)
         self.detail_fusion = SARDetailFusion(hidden_dim, num_levels) if detail_fusion else None
         self.detail_classifier_fusion = detail_classifier_fusion
+        self.small_object_head = (
+            SmallObjectHead(
+                num_classes=num_classes,
+                input_size=resolution,
+                max_object_size=small_object_max_size,
+                score_threshold=small_object_score_threshold,
+            )
+            if small_object_head
+            else None
+        )
         train_config = TrainConfig(
             dataset_dir=None,
             output_dir="output",
@@ -313,12 +503,15 @@ class RFDETRMultiTask(nn.Module):
 
     def forward(self, images: torch.Tensor) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         self._shared_feature = None
+        small_object_outputs = self.small_object_head(images) if self.small_object_head is not None else None
         outputs = self.detector(images)
         if self._shared_feature is None:
             raise RuntimeError("RF-DETR backbone feature hook did not run")
         pooled = self._masked_average(self._shared_feature)
         logits = self.classifier(pooled)
         self._shared_feature = None
+        if small_object_outputs is not None:
+            outputs["_small_object"] = small_object_outputs
         return logits, outputs
 
     def detection_losses(
@@ -326,10 +519,12 @@ class RFDETRMultiTask(nn.Module):
         outputs: dict[str, torch.Tensor],
         targets: list[dict[str, torch.Tensor]],
         box_loss_scale: float = 1.0,
+        small_object_loss_weight: float = 1.0,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        if box_loss_scale <= 0:
-            raise ValueError("box_loss_scale must be positive")
-        loss_dict = self.criterion(outputs, targets)
+        if box_loss_scale <= 0 or small_object_loss_weight < 0:
+            raise ValueError("box_loss_scale must be positive and small_object_loss_weight non-negative")
+        detector_outputs = {name: value for name, value in outputs.items() if name != "_small_object"}
+        loss_dict = self.criterion(detector_outputs, targets)
         weighted = {
             name: value
             * self.criterion.weight_dict[name]
@@ -337,12 +532,45 @@ class RFDETRMultiTask(nn.Module):
             for name, value in loss_dict.items()
             if name in self.criterion.weight_dict
         }
+        if getattr(self, "small_object_head", None) is not None:
+            small_outputs = outputs.get("_small_object")
+            if small_outputs is None:
+                raise RuntimeError("small-object head is enabled but its outputs are missing")
+            small_losses = self.small_object_head.losses(small_outputs, targets)
+            weighted.update(
+                {
+                    name: value * small_object_loss_weight
+                    for name, value in small_losses.items()
+                }
+            )
         return torch.stack(list(weighted.values())).sum(), weighted
 
     def detections(self, outputs: dict[str, torch.Tensor], size: int = 512) -> list[dict[str, torch.Tensor]]:
         batch = outputs["pred_logits"].shape[0]
         target_sizes = outputs["pred_logits"].new_full((batch, 2), size, dtype=torch.long)
-        return self.postprocess(outputs, target_sizes)
+        detector_outputs = {name: value for name, value in outputs.items() if name != "_small_object"}
+        detections = self.postprocess(detector_outputs, target_sizes)
+        if getattr(self, "small_object_head", None) is None:
+            return detections
+        small_outputs = outputs.get("_small_object")
+        if small_outputs is None:
+            raise RuntimeError("small-object head is enabled but its outputs are missing")
+        small_detections = self.small_object_head.detections(small_outputs, size=size)
+        merged = []
+        for detection, small in zip(detections, small_detections):
+            keep_small = torch.ones(len(small["boxes"]), dtype=torch.bool, device=small["boxes"].device)
+            for label in torch.unique(small["labels"]):
+                small_indices = torch.where(small["labels"] == label)[0]
+                baseline_indices = torch.where(detection["labels"] == label)[0]
+                if len(baseline_indices):
+                    overlap = box_iou(small["boxes"][small_indices], detection["boxes"][baseline_indices])
+                    keep_small[small_indices] = overlap.amax(dim=1) < 0.7
+            boxes = torch.cat([detection["boxes"], small["boxes"][keep_small]])
+            labels = torch.cat([detection["labels"], small["labels"][keep_small]])
+            scores = torch.cat([detection["scores"].float(), small["scores"][keep_small]])
+            order = torch.argsort(scores, descending=True, stable=True)[:300]
+            merged.append({"boxes": boxes[order], "labels": labels[order], "scores": scores[order]})
+        return merged
 
     def optimizer_parameter_groups(
         self,
@@ -366,5 +594,9 @@ class RFDETRMultiTask(nn.Module):
         if self.detail_fusion is not None:
             groups.append(
                 {"params": list(self.detail_fusion.parameters()), "lr": lr, "weight_decay": weight_decay}
+            )
+        if getattr(self, "small_object_head", None) is not None:
+            groups.append(
+                {"params": list(self.small_object_head.parameters()), "lr": lr, "weight_decay": weight_decay}
             )
         return groups

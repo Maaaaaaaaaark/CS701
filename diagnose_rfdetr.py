@@ -35,6 +35,9 @@ def parse_args():
     parser.add_argument("--data", type=Path, default=Path("cs701-sar-course-data"))
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--variant", choices=("small", "medium"), default="small")
+    parser.add_argument("--small-object-head", action="store_true")
+    parser.add_argument("--small-object-max-size", type=float, default=32.0)
+    parser.add_argument("--small-object-score-threshold", type=float, default=0.05)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument(
@@ -75,7 +78,14 @@ def main():
         pin_memory=True,
         collate_fn=collate,
     )
-    model = RFDETRMultiTask(pretrained=True, variant=args.variant, resolution=512)
+    model = RFDETRMultiTask(
+        pretrained=True,
+        variant=args.variant,
+        resolution=512,
+        small_object_head=args.small_object_head,
+        small_object_max_size=args.small_object_max_size,
+        small_object_score_threshold=args.small_object_score_threshold,
+    )
     model.load_state_dict(torch.load(args.checkpoint, map_location="cpu", weights_only=True))
     model.cuda().eval()
 

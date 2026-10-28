@@ -265,6 +265,21 @@ BATCH_SIZE=4 GRAD_ACCUM_STEPS=2 WORKERS=8 \
   --partition=researchshort --gres=gpu:3090:1 --mem=40G --time=12:00:00
 ```
 
+The stride-4 small-object experiment adds a lightweight anchor-free center/box head trained only on objects whose
+largest side is at most 32 px at the 512-px input scale. Its candidates are class-wise NMS-merged with RF-DETR at
+inference, directly targeting the bridge/playground miss and center-offset errors while leaving the baseline
+decoder intact. It writes to `runs/rfdetr_small_coco_full_e48_smallobj_s4/`:
+
+```bash
+WORKERS=2 \
+  ./cluster/submit_rfdetr_small_smallobj_s4_smoke.sh \
+  --partition=researchshort --gres=gpu:3090:1 --mem=16G --time=01:00:00
+
+BATCH_SIZE=4 GRAD_ACCUM_STEPS=2 WORKERS=8 \
+  ./cluster/submit_rfdetr_small_smallobj_s4.sh \
+  --partition=researchshort --gres=gpu:3090:1 --mem=40G --time=12:00:00
+```
+
 ### 2.6 Use Course Data
 
 The code auto-detects the released

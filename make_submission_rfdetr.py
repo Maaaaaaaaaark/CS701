@@ -31,6 +31,9 @@ def parse_args():
         action="store_true",
         help="classify from original P4 while routing detail fusion only to detection",
     )
+    parser.add_argument("--small-object-head", action="store_true")
+    parser.add_argument("--small-object-max-size", type=float, default=32.0)
+    parser.add_argument("--small-object-score-threshold", type=float, default=0.05)
     parser.add_argument("--output", type=Path, default=Path("submissions/rfdetr_small_val.zip"))
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--workers", type=int, default=4)
@@ -45,6 +48,10 @@ def parse_args():
         parser.error("--topk must be positive")
     if args.detail_detection_only and not args.detail_fusion:
         parser.error("--detail-detection-only requires --detail-fusion")
+    if args.small_object_max_size <= 0:
+        parser.error("--small-object-max-size must be positive")
+    if not 0 <= args.small_object_score_threshold <= 1:
+        parser.error("--small-object-score-threshold must be between 0 and 1")
     return args
 
 
@@ -83,6 +90,9 @@ def main():
         resolution=512,
         detail_fusion=args.detail_fusion,
         detail_classifier_fusion=not args.detail_detection_only,
+        small_object_head=args.small_object_head,
+        small_object_max_size=args.small_object_max_size,
+        small_object_score_threshold=args.small_object_score_threshold,
     )
     model.load_state_dict(torch.load(args.checkpoint, map_location="cpu", weights_only=True))
     model.to(device).eval()

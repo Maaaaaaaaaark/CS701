@@ -33,6 +33,13 @@ fi
 if [[ "${DETAIL_DETECTION_ONLY:-0}" == "1" ]]; then
   EXTRA_ARGS+=(--detail-detection-only)
 fi
+if [[ "${SMALL_OBJECT_HEAD:-0}" == "1" ]]; then
+  EXTRA_ARGS+=(
+    --small-object-head
+    --small-object-max-size "${SMALL_OBJECT_MAX_SIZE:-32}"
+    --small-object-score-threshold "${SMALL_OBJECT_SCORE_THRESHOLD:-0.05}"
+  )
+fi
 python make_submission_rfdetr.py \
   --data cs701-sar-course-data/val \
   --checkpoint "$CHECKPOINT" \

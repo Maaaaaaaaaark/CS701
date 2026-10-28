@@ -41,6 +41,14 @@ def parse_args():
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--classification-weight", type=float, default=1.0)
     parser.add_argument(
+        "--small-object-head",
+        action="store_true",
+        help="add a stride-4 auxiliary head for small-object recall and localization",
+    )
+    parser.add_argument("--small-object-max-size", type=float, default=32.0)
+    parser.add_argument("--small-object-loss-weight", type=float, default=1.0)
+    parser.add_argument("--small-object-score-threshold", type=float, default=0.05)
+    parser.add_argument(
         "--class-aware-sampling",
         action="store_true",
         help="sample selected image classes more often while keeping epoch length fixed",
@@ -89,6 +97,10 @@ def parse_args():
         parser.error("--detail-detection-only requires --detail-fusion")
     if args.class_aware_factor < 1:
         parser.error("--class-aware-factor must be at least 1")
+    if args.small_object_max_size <= 0 or args.small_object_loss_weight < 0:
+        parser.error("--small-object-max-size must be positive and its loss weight non-negative")
+    if not 0 <= args.small_object_score_threshold <= 1:
+        parser.error("--small-object-score-threshold must be between 0 and 1")
     return args
 
 
@@ -163,6 +175,11 @@ def lr_factor(step, warmup, total):
 def train_one_epoch(model, loader, optimizer, scheduler, epoch, args, log_file):
     model.train()
     optimizer.zero_grad(set_to_none=True)
+    small_parameters = list(model.small_object_head.parameters()) if model.small_object_head is not None else []
+    small_parameter_ids = {id(parameter) for parameter in small_parameters}
+    main_parameters = [
+        parameter for parameter in model.parameters() if id(parameter) not in small_parameter_ids
+    ]
     start, seen = time.time(), 0
     remainder = len(loader) % args.grad_accum_steps
     for step, (images, labels, raw_targets) in enumerate(loader, 1):
@@ -180,6 +197,7 @@ def train_one_epoch(model, loader, optimizer, scheduler, epoch, args, log_file):
                 outputs,
                 targets,
                 box_loss_scale=args.box_loss_scale,
+                small_object_loss_weight=args.small_object_loss_weight,
             )
             loss = args.classification_weight * classification_loss + detection_loss
 
@@ -188,7 +206,11 @@ def train_one_epoch(model, loader, optimizer, scheduler, epoch, args, log_file):
         (loss / divisor).backward()
         update = step % args.grad_accum_steps == 0 or step == len(loader)
         if update:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.1)
+            # Keep the auxiliary head's gradient norm from changing the baseline
+            # RF-DETR update through global clipping.
+            torch.nn.utils.clip_grad_norm_(main_parameters, 0.1)
+            if small_parameters:
+                torch.nn.utils.clip_grad_norm_(small_parameters, 0.1)
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
             scheduler.step()
@@ -199,7 +221,14 @@ def train_one_epoch(model, loader, optimizer, scheduler, epoch, args, log_file):
             core = " ".join(
                 f"{name} {value.item():.3f}"
                 for name, value in detection_parts.items()
-                if name in {"loss_ce", "loss_bbox", "loss_giou"}
+                if name in {
+                    "loss_ce",
+                    "loss_bbox",
+                    "loss_giou",
+                    "loss_small_cls",
+                    "loss_small_l1",
+                    "loss_small_giou",
+                }
             )
             write_log(
                 f"epoch {epoch} iter {step}/{len(loader)} loss {loss.item():.3f} "
@@ -279,6 +308,9 @@ def main():
         resolution=512,
         detail_fusion=args.detail_fusion,
         detail_classifier_fusion=not args.detail_detection_only,
+        small_object_head=args.small_object_head,
+        small_object_max_size=args.small_object_max_size,
+        small_object_score_threshold=args.small_object_score_threshold,
     )
     parameters = sum(parameter.numel() for parameter in model.parameters())
     trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
