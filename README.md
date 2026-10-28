@@ -275,7 +275,22 @@ local holdout controlled by `--val-fraction` and `--split-seed`.
 The released validation and test labels remain hidden, so local metrics come from the training holdout; official
 validation scores require submission to the course leaderboard.
 
-### 2.7 Make Submission
+### 2.7 Diagnose weak detection classes
+
+Use the saved local-holdout predictions to separate missed objects, localization errors, wrong-class predictions,
+and low-confidence correct boxes. The report also includes box-size/aspect distributions and predicted-to-ground-
+truth size ratios for bridge and playground:
+
+```bash
+python diagnose_detection_errors.py \
+  --run baseline=runs/rfdetr_small_coco_full_e48 \
+  --run classaware=runs/rfdetr_small_coco_full_e48_classaware_b15_p15 \
+  --classes bridge playground \
+  --score-threshold 0.05 \
+  --output runs/rfdetr_bridge_playground_diagnostic.json
+```
+
+### 2.8 Make Submission
 
 Extract `val.tar.gz`, then run `make_submission.py` with the trained checkpoint. It normalizes the validation
 images exactly as in training, maps predicted boxes back to original pixels, writes the two required files into a
