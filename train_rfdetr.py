@@ -7,7 +7,7 @@ from pathlib import Path
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from sarbench.data import SARMultiTask, collate, to_original_xywh
 from sarbench.metrics import classification_metrics, detection_metrics
@@ -41,6 +41,23 @@ def parse_args():
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--classification-weight", type=float, default=1.0)
     parser.add_argument(
+        "--class-aware-sampling",
+        action="store_true",
+        help="sample selected image classes more often while keeping epoch length fixed",
+    )
+    parser.add_argument(
+        "--class-aware-classes",
+        nargs="+",
+        default=("bridge", "playground"),
+        help="class names to upweight when class-aware sampling is enabled",
+    )
+    parser.add_argument(
+        "--class-aware-factor",
+        type=float,
+        default=1.5,
+        help="sampling weight for selected classes; all other classes use weight 1",
+    )
+    parser.add_argument(
         "--box-loss-scale",
         type=float,
         default=1.0,
@@ -70,12 +87,37 @@ def parse_args():
         parser.error("--classification-weight must be non-negative and --box-loss-scale positive")
     if args.detail_detection_only and not args.detail_fusion:
         parser.error("--detail-detection-only requires --detail-fusion")
+    if args.class_aware_factor < 1:
+        parser.error("--class-aware-factor must be at least 1")
     return args
 
 
 def write_log(message, file):
     print(message, flush=True)
     print(message, file=file, flush=True)
+
+
+def class_aware_sampler(dataset, data_root, class_names, factor, seed):
+    classes_path = Path(data_root) / "classes.json"
+    if not classes_path.is_file():
+        raise FileNotFoundError(f"class-aware sampling requires {classes_path}")
+    classes = json.loads(classes_path.read_text())
+    labels_by_name = {item["name"]: int(item["label"]) for item in classes}
+    missing = sorted(set(class_names) - labels_by_name.keys())
+    if missing:
+        raise ValueError(f"unknown class-aware sampling classes: {', '.join(missing)}")
+    selected_labels = {labels_by_name[name] for name in class_names}
+    weights = torch.tensor(
+        [factor if int(row["label"]) in selected_labels else 1.0 for row in dataset.rows],
+        dtype=torch.double,
+    )
+    generator = torch.Generator().manual_seed(seed)
+    return WeightedRandomSampler(
+        weights,
+        num_samples=len(dataset),
+        replacement=True,
+        generator=generator,
+    )
 
 
 def make_loader(args, split):
@@ -91,10 +133,20 @@ def make_loader(args, split):
         mean=RFDETR_IMAGE_MEAN,
         std=RFDETR_IMAGE_STD,
     )
+    sampler = None
+    if train and args.class_aware_sampling:
+        sampler = class_aware_sampler(
+            dataset,
+            args.data,
+            args.class_aware_classes,
+            args.class_aware_factor,
+            args.seed,
+        )
     return DataLoader(
         dataset,
         args.batch_size,
-        shuffle=train,
+        shuffle=train and sampler is None,
+        sampler=sampler,
         num_workers=args.workers,
         collate_fn=collate,
         persistent_workers=train and args.workers > 0,

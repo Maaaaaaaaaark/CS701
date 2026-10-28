@@ -250,6 +250,21 @@ BATCH_SIZE=4 GRAD_ACCUM_STEPS=2 WORKERS=8 \
   --partition=researchshort --gres=gpu:3090:1 --mem=40G --time=12:00:00
 ```
 
+The class-aware sampling ablation returns to the unmodified RF-DETR Small baseline and gives bridge and playground
+images sampling weight 1.5 while every other image has weight 1.0. Sampling is with replacement, but each epoch
+still contains exactly the baseline number of images, so the optimizer schedule and compute remain unchanged. It
+writes to `runs/rfdetr_small_coco_full_e48_classaware_b15_p15/`:
+
+```bash
+WORKERS=2 \
+  ./cluster/submit_rfdetr_small_classaware_smoke.sh \
+  --partition=researchshort --gres=gpu:3090:1 --mem=16G --time=01:00:00
+
+BATCH_SIZE=4 GRAD_ACCUM_STEPS=2 WORKERS=8 \
+  ./cluster/submit_rfdetr_small_classaware.sh \
+  --partition=researchshort --gres=gpu:3090:1 --mem=40G --time=12:00:00
+```
+
 ### 2.6 Use Course Data
 
 The code auto-detects the released
