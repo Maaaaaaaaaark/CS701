@@ -236,6 +236,20 @@ BATCH_SIZE=4 GRAD_ACCUM_STEPS=2 WORKERS=8 \
   --partition=researchshort --gres=gpu:3090:1 --mem=40G --time=12:00:00
 ```
 
+The detection-only follow-up keeps the original P4 feature for image classification and routes the SAR-detail
+residual only to the detection decoder. This tests whether the detail branch's AP75 gain can be retained without
+the classification decrease. It writes to `runs/rfdetr_small_coco_full_e48_sar_detail_det_only/`:
+
+```bash
+WORKERS=2 \
+  ./cluster/submit_rfdetr_small_sar_detail_det_only_smoke.sh \
+  --partition=researchshort --gres=gpu:3090:1 --mem=16G --time=01:00:00
+
+BATCH_SIZE=4 GRAD_ACCUM_STEPS=2 WORKERS=8 \
+  ./cluster/submit_rfdetr_small_sar_detail_det_only.sh \
+  --partition=researchshort --gres=gpu:3090:1 --mem=40G --time=12:00:00
+```
+
 ### 2.6 Use Course Data
 
 The code auto-detects the released

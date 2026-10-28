@@ -205,6 +205,7 @@ class RFDETRMultiTask(nn.Module):
         resolution: int = 512,
         variant: RFDETRVariant = "small",
         detail_fusion: bool = False,
+        detail_classifier_fusion: bool = True,
     ):
         super().__init__()
         try:
@@ -244,6 +245,7 @@ class RFDETRMultiTask(nn.Module):
         hidden_dim = int(self.model_config.hidden_dim)
         num_levels = len(self.model_config.projector_scale)
         self.detail_fusion = SARDetailFusion(hidden_dim, num_levels) if detail_fusion else None
+        self.detail_classifier_fusion = detail_classifier_fusion
         train_config = TrainConfig(
             dataset_dir=None,
             output_dir="output",
@@ -278,6 +280,7 @@ class RFDETRMultiTask(nn.Module):
         features, positions, cross_attn_features = output
         if not features:
             raise RuntimeError("RF-DETR backbone returned no feature maps")
+        classifier_feature = features[-1]
         if self.detail_fusion is not None:
             if self._detail_input is None:
                 raise RuntimeError("RF-DETR detail fusion did not capture the input image")
@@ -295,7 +298,7 @@ class RFDETRMultiTask(nn.Module):
                     )
                 )
             features = fused_features
-        self._shared_feature = features[-1]
+        self._shared_feature = features[-1] if self.detail_classifier_fusion else classifier_feature
         self._detail_input = None
         return features, positions, cross_attn_features
 

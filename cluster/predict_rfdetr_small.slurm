@@ -30,6 +30,9 @@ fi
 if [[ "${DETAIL_FUSION:-0}" == "1" ]]; then
   EXTRA_ARGS+=(--detail-fusion)
 fi
+if [[ "${DETAIL_DETECTION_ONLY:-0}" == "1" ]]; then
+  EXTRA_ARGS+=(--detail-detection-only)
+fi
 python make_submission_rfdetr.py \
   --data cs701-sar-course-data/val \
   --checkpoint "$CHECKPOINT" \

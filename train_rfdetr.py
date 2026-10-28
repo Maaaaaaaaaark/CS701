@@ -28,6 +28,11 @@ def parse_args():
         action="store_true",
         help="inject a raw-pixel stride-4/8 SAR detail branch into RF-DETR projector features",
     )
+    parser.add_argument(
+        "--detail-detection-only",
+        action="store_true",
+        help="route fused detail only to detection; classify from the original P4 feature",
+    )
     parser.add_argument("--epochs", type=int, default=48)
     parser.add_argument("--batch-size", type=int, default=4, help="physical batch size per GPU")
     parser.add_argument("--grad-accum-steps", type=int, default=2)
@@ -63,6 +68,8 @@ def parse_args():
         parser.error("--keep-last-checkpoints cannot be negative")
     if args.classification_weight < 0 or args.box_loss_scale <= 0:
         parser.error("--classification-weight must be non-negative and --box-loss-scale positive")
+    if args.detail_detection_only and not args.detail_fusion:
+        parser.error("--detail-detection-only requires --detail-fusion")
     return args
 
 
@@ -219,6 +226,7 @@ def main():
         variant=args.variant,
         resolution=512,
         detail_fusion=args.detail_fusion,
+        detail_classifier_fusion=not args.detail_detection_only,
     )
     parameters = sum(parameter.numel() for parameter in model.parameters())
     trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)

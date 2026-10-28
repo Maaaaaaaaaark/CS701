@@ -26,6 +26,11 @@ def parse_args():
         action="store_true",
         help="construct the RF-DETR SAR detail branch used by the checkpoint",
     )
+    parser.add_argument(
+        "--detail-detection-only",
+        action="store_true",
+        help="classify from original P4 while routing detail fusion only to detection",
+    )
     parser.add_argument("--output", type=Path, default=Path("submissions/rfdetr_small_val.zip"))
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--workers", type=int, default=4)
@@ -38,6 +43,8 @@ def parse_args():
         parser.error("--class-fusion-alpha must be non-negative")
     if args.topk is not None and args.topk < 1:
         parser.error("--topk must be positive")
+    if args.detail_detection_only and not args.detail_fusion:
+        parser.error("--detail-detection-only requires --detail-fusion")
     return args
 
 
@@ -75,6 +82,7 @@ def main():
         variant=args.variant,
         resolution=512,
         detail_fusion=args.detail_fusion,
+        detail_classifier_fusion=not args.detail_detection_only,
     )
     model.load_state_dict(torch.load(args.checkpoint, map_location="cpu", weights_only=True))
     model.to(device).eval()
