@@ -1,0 +1,63 @@
+# Copied into D-FINE/configs/cs701 by cluster/setup_dfine.sh.
+# Relative includes below are resolved from that destination.
+__include__: [
+  '../dfine/custom/objects365/dfine_hgnetv2_l_obj2custom.yml',
+]
+
+output_dir: ./runs/dfine_l_obj2coco_sar512_e36
+num_classes: 9
+remap_mscoco_category: False
+eval_spatial_size: [512, 512]
+epochs: 36
+checkpoint_freq: 4
+
+# With one 24 GB GPU, eight 512px images is a conservative starting point.
+train_dataloader:
+  dataset:
+    img_folder: .dfine/data/train/images
+    ann_file: .dfine/data/train/instances.json
+    transforms:
+      ops:
+        # SAR pixels are grayscale intensity measurements. RGB colour jitter can
+        # create artificial channel differences, so retain only geometry-safe augmentation.
+        - {type: RandomHorizontalFlip}
+        - {type: Resize, size: [512, 512]}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
+      policy: ~
+  total_batch_size: 8
+  num_workers: 8
+  collate_fn:
+    base_size: 512
+    base_size_repeat: ~
+    stop_epoch: 36
+
+val_dataloader:
+  dataset:
+    img_folder: .dfine/data/val/images
+    ann_file: .dfine/data/val/instances.json
+    transforms:
+      ops:
+        - {type: Resize, size: [512, 512]}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+  total_batch_size: 8
+  num_workers: 8
+  collate_fn:
+    base_size: 512
+    base_size_repeat: ~
+
+# The official O365->COCO recipe uses batch 32. This slightly reduced LR is
+# more stable at batch 8 while retaining its low backbone learning rate.
+optimizer:
+  type: AdamW
+  params:
+    -
+      params: '^(?=.*backbone)(?!.*norm|bn).*$'
+      lr: 0.00000625
+    -
+      params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn)).*$'
+      weight_decay: 0.
+  lr: 0.000125
+  betas: [0.9, 0.999]
+  weight_decay: 0.000125

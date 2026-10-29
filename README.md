@@ -305,7 +305,45 @@ python diagnose_detection_errors.py \
   --output runs/rfdetr_bridge_playground_diagnostic.json
 ```
 
-### 2.8 Make Submission
+### 2.8 D-FINE-L Objects365+COCO at 512
+
+This experiment pins the official D-FINE repository, uses its D-FINE-L Objects365-to-COCO checkpoint, and
+full-finetunes the approximately 31 M parameter model. The generated COCO split exactly reproduces the existing
+class-stratified 90/10 holdout. Inputs are fixed at 512 px; crop, zoom-out, and multiscale sizes above 512 are
+disabled to preserve small SAR objects and comply with the course input rule.
+
+Set up everything inside this project folder once:
+
+```bash
+chmod +x cluster/setup_dfine.sh cluster/submit_dfine_l*.sh run_dfine_l.sh
+./cluster/setup_dfine.sh
+```
+
+Run a one-epoch smoke test, then the 36-epoch experiment:
+
+```bash
+./cluster/submit_dfine_l_smoke.sh \
+  --partition=researchshort --gres=gpu:3090:1 --mem=32G --time=01:00:00
+
+BATCH_SIZE=8 WORKERS=8 ./cluster/submit_dfine_l.sh \
+  --partition=researchshort --gres=gpu:3090:1 --mem=40G --time=12:00:00
+```
+
+The full run is written to `runs/dfine_l_obj2coco_sar512_e36`. Inspect its official COCO validation curve with:
+
+```bash
+python summarize_dfine.py runs/dfine_l_obj2coco_sar512_e36
+```
+
+After choosing the best official checkpoint, create the validation submission with the same fixed-512 pipeline:
+
+```bash
+CHECKPOINT=runs/dfine_l_obj2coco_sar512_e36/best_stg1.pth \
+  ./cluster/submit_prediction_dfine_l.sh \
+  --partition=researchshort --gres=gpu:3090:1 --mem=16G --time=02:00:00
+```
+
+### 2.9 Make Submission
 
 Extract `val.tar.gz`, then run `make_submission.py` with the trained checkpoint. It normalizes the validation
 images exactly as in training, maps predicted boxes back to original pixels, writes the two required files into a

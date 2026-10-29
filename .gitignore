@@ -5,6 +5,8 @@ __pycache__/
 cs701-sar-course-data/
 .venv/
 .venv-rfdetr/
+.venv-dfine/
+.dfine/
 .cache/
 .tmp/
 logs/
