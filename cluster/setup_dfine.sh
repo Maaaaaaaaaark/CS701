@@ -25,7 +25,7 @@ python -m pip install --upgrade pip
 python -m pip install \
   torch==2.9.0 torchvision==0.24.0 \
   faster-coco-eval PyYAML tensorboard scipy calflops transformers loguru \
-  pillow tqdm pycocotools
+  pillow tqdm pycocotools matplotlib
 
 if [[ ! -s "$WEIGHT" ]]; then
   curl -L --fail --retry 3 \
